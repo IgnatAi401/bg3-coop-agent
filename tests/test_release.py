@@ -108,4 +108,5 @@ def test_update_check_uses_the_repository():
 def test_rules_tool_returns_the_instructions():
     from bg3coop import server
 
-    assert server.rules() == server.INSTRUCTIONS
+    text = server.rules()
+    assert text.startswith(server.INSTRUCTIONS) and server.COMBAT_BASICS in text

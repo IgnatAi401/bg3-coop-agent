@@ -1,10 +1,10 @@
-"""The hand-written protobuf subset in luadebug.py."""
+"""The hand-written protobuf subset in remote_lua.py."""
 
 import struct
 
 import pytest
 
-from bg3coop import luadebug as ld
+from bg3coop import remote_lua as ld
 
 
 def test_round_trip():
@@ -71,7 +71,7 @@ def connected_client(monkeypatch, replies, **kwargs):
     # BkConnectResponse(protocol_version=5), with no reply_seq_no.
     sock = DebuggerSocket([b"\x08\x01\x1a\x02\x08\x05", *replies], **kwargs)
     monkeypatch.setattr(ld.socket, "create_connection", lambda *a, **k: sock)
-    client = ld.LuaDebugClient()
+    client = ld.RemoteLua()
     assert client.connect() == 5
     return client, sock
 
@@ -99,7 +99,7 @@ def test_refusal_keeps_connection_usable(monkeypatch):
         b"\x10\x04\x2a\x04\x0a\x02\x08\x01",  # false
     ])
     try:
-        with pytest.raises(ld.LuaDebugError, match="EVAL_ENGINE_NOT_READY"):
+        with pytest.raises(ld.RemoteLuaError, match="EVAL_ENGINE_NOT_READY"):
             client.evaluate("return 1")
         assert client.connected
         assert client.evaluate("return false") == "false"

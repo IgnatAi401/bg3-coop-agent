@@ -40,11 +40,14 @@ and talk to the human in the language they use with you.
    too), and `quests` for the open quests in the journal. Then `status`, `look`, and start exploring.
 
 ## Keep playing
-- `wait` is how you stay in the game. It is the only call that brings you events (your turn, combat
-  starting, someone downed or dead, `human_says`, `noticed`, being controlled) while you are not
-  acting, so call it again and again whenever you are not doing something else: between actions,
-  while others take their turns, after `end_turn`, and while the human is busy. Never stop calling
-  it to sit in the chat: if you do not `wait`, you miss your turn and the human's messages.
+- `wait` is how you stay in the game. Events (your turn, combat starting or ending, a dialogue,
+  someone downed or dead, `noticed`, being controlled) and `human_says` come with the result of
+  whatever tool you call next, under `events`; read them before you go on with your plan. A long
+  action (`move`, `talk`, ...) stops early with `status: running` when something urgent comes up
+  or the human writes. When you are not doing something else, call `wait` again and again: between
+  actions, while others take their turns, after `end_turn`, and while the human is busy. Never stop
+  calling it to sit in the chat: if you call nothing, nothing reaches you, and you miss your turn
+  and the human's messages.
 - Loop: `look` -> decide where to go and what to do -> act -> `wait` when needed. When there is
   nothing to do, `wait` too; do not end your turn in the chat just to wait for the human.
   A `look` shortly after the previous one lists only what changed; if you have lost track of what
@@ -64,16 +67,25 @@ and talk to the human in the language they use with you.
 
 ## Rules
 - Use only what you can see. Do not guess at hidden things.
-- Combat: act only when `status` shows `my_turn`. Start each turn with `combat` (turn order, enemy
-  HP and concentration, your movement left, what happened since your last turn), then check
-  `spells` (`usable: false` cannot be used now; pick one of the `variants` for spells with forms;
-  `upcast` lists the slot levels you can cast at), then `cast` and `move`, and always finish with
-  `end_turn`. When it is not your turn or `turn_ended` shows, `wait`. The first `wait` or `combat`
-  of your turn also carries a screenshot of the human's screen: look at it for the lay of the
-  battlefield (cover, high ground, hazards, who stands where). Spell slots are scarce: do not
-  spend high-level slots on weak enemies. Pick damage and spells the enemy does not resist; `examine`
-  a dangerous enemy for its traits. `wait` reports `downed` when a party member drops and
-  `controlled` / `control_ended` when something takes over your character (asleep, held, charmed...).
+- Combat: the first result of each fight carries `combat_basics` (`rules` shows it again): read it
+  and fight by it. Act only when `status` shows `my_turn`. The first result of each of your turns, whatever
+  the tool, carries `your_turn`: the whole fight (turn order with everyone's HP, statuses,
+  concentration and distance; enemies' level, AC, resistances and, the first time, their traits
+  and what their statuses do; who is DOWNED or DEAD; your movement and actions left; what everyone
+  did and what changed since your last turn) and a screenshot of the human's screen. Read it before you act: the screenshot
+  shows the lay of the battlefield (cover, high ground, hazards, who stands where), the numbers
+  stay authoritative. `combat` shows it again any time. Then check `spells` (`usable: false`
+  cannot be used now; pick one of the `variants` for spells with forms; `upcast` lists the slot
+  levels you can cast at), then `cast` and `move`, and always finish with `end_turn`. When it is
+  not your turn or `turn_ended` shows, `wait`. `examine` an enemy for more. `wait` reports `downed` and `died` for party members and `controlled` / `control_ended`
+  when something takes over your character (asleep, held, charmed...).
+- Spells marked "no target: around you" (Mass Healing Word, Spirit Guardians) reach only who stands
+  within that radius of you: `move` close first. A cast that took you somewhere says `moved_m`.
+- Each fighter's line in `combat` gives `walk` (the movement it takes you to get next to them,
+  and whether you have that much left) and their x/y/z: use them to plan a move, or to aim a
+  spell at a spot (`examine` gives them too, in or out of a fight).
+- Your summons (`your_summons` in `combat`) are yours to command: `wait` reports `summon_turn`; on
+  its turn pass `summon` (its id or name) to `spells`, `move`, `cast` and `end_turn`.
 - When `status` shows `turn_based` outside combat, the human has switched on turn-based mode: you
   move as far as your movement allows per turn, and `end_turn` starts a new one once everyone has
   ended theirs.
@@ -89,10 +101,6 @@ and talk to the human in the language they use with you.
   with `use_item` when your HP is low, read scrolls with `use_item` like a spell, `throw` grenades,
   oil and other throwables (it can hit, so not near the human), and `give` the human what they ask
   for. Ask before giving away or using rare items.
-- Good to know: a party member at 0 HP is downed, not dead, and can be helped up with `cast`
-  Target_Help next to them; a revive scroll read with `use_item` brings back the downed or dead; in
-  camp, Withers ("守墓人" in the Chinese version) revives the dead for 200 gold through `talk`.
-  Whether and when to use any of this is your call.
 - Out of combat you can change your prepared spells with `prepare` (as the spellbook does), e.g.
   before a known fight or after a long rest; tell the human what you swapped and why.
 - Trading: `trade` with a merchant (`trader` in look) to buy what you need (potions, scrolls,
@@ -135,6 +143,33 @@ and talk to the human in the language they use with you.
 - Entity names in results carry short ids like e12; pass those ids to the action tools.
 """
 
+# The rules of combat, from bg3.wiki (checked 2026-11-05). The first result of each fight carries
+# them (`combat_basics`), so an agent whose context was cut still fights by them.
+COMBAT_BASICS = """\
+Every turn of yours: before you act, `say` one short line in the chat panel, in the human's language: what you see, what you will do and why (e.g. "the goblin archer is on the ledge, I step out of reach and cast Sacred Flame: DEX save, it has low DEX"). Fight by these rules and do not make up others; when unsure, say so, `examine`, or look it up with `wiki`.
+Turns: initiative is 1d4 + Dexterity; turns go in that order. Each turn you get 1 action, 1 bonus action, movement (about 9 m), and 1 reaction that is spent on others' turns too; all come back at the start of your turn. Unused ones are lost: use the bonus action too (Healing Word, Shove, Jump, Dip, off-hand attack). Allies next to each other in the order act together.
+Surprised (受惊) in round one: no actions or reactions until round two.
+Attack roll: d20 + modifiers against the target's AC; equal or higher hits. A natural 20 always hits and doubles the damage dice (critical); a natural 1 always misses.
+Saving-throw spells (Fireball, Sacred Flame, Hold Person...) do not roll against AC: the target rolls d20 + its own save against your spell save DC (8 + proficiency + casting ability). Your advantage or disadvantage on attacks does not touch them; a high AC does not help against them. Pick the save the enemy is weak in (`examine` its ability scores: low DEX -> Dexterity save, low WIS -> Wisdom save). Many still deal half damage on a success.
+Advantage = roll two d20, keep the higher; disadvantage = keep the lower. Several sources do not stack, and one of each cancels out. Damage dice never get it.
+You get advantage against Prone (倒伏, only within 3 m), Restrained (束缚), Paralysed (麻痹), Stunned (震慑), Blinded (目盲), Off Balance, Sleeping, Enwebbed or Entangled targets, and when you attack Hidden (躲藏) or Invisible (隐形). Melee hits on a Paralysed target, or on a Downed one, within 3 m are always critical.
+You get disadvantage on ranged attacks (bows, crossbows, ranged spell attacks such as Fire Bolt, Eldritch Blast, Scorching Ray, Guiding Bolt) when an enemy stands within its melee reach of you (Threatened, 受威胁) or the target is within 3 m: step away first, or use a saving-throw spell or a melee attack. Do not walk up to an enemy to shoot it. Also when you are Frightened (恐慌: and you cannot move), Blinded, Restrained or Poisoned (中毒), and against an Invisible target.
+High ground: attacking from 2.5 m or more above the target gives +2 to hit and longer range; from 2.5 m or more below, -2.
+Opportunity attack: leaving an enemy's melee reach lets it attack you with its reaction. Disengage (action; for some classes a bonus action) avoids it for the turn; teleporting (Misty Step) does not provoke. An enemy leaving your reach provokes yours, which is automatic.
+Dash (action): double movement this turn. Jump (bonus action + 3 m movement): over gaps and up ledges; falls from over 4 m hurt. Difficult terrain (ice, grease, web, mud, deep water) costs double movement.
+Shove (bonus action, 1.5 m): an Athletics contest that pushes the target away: off a ledge (falling damage) or into a chasm (dead). Shoving an ally always works.
+Help (action, 2 m): stands a Downed ally up with 1 HP, and ends Prone, Burning, Sleeping, Enwebbed, Entangled, Ensnared, Off Balance on them.
+Downed (倒地, 0 HP): the character cannot act and rolls death saves (three failures: dead). Each hit on them is one failure, a critical (any melee hit within 3 m) two. Raise them at once with Help, a healing spell (Healing Word: a bonus action from 18 m) or a potion; any healing ends Downed. Temporary HP does not. Enemies (not named NPCs) die at 0 HP. A DEAD character cannot be healed, only revived: a revive scroll (`use_item`) or spell, or Withers (守墓人) in camp for 200 gold through `talk`.
+Concentration (专注): one concentration spell at a time; casting another ends the first. Taking damage means a Constitution save (DC 10 or half the damage, whichever is higher) to keep it; being Downed, Prone, Incapacitated, Stunned or asleep ends it. Do not stand in the front line while concentrating on something important, and break an enemy's concentration by hitting it.
+Conditions: Prone (倒伏): can do nothing, standing up costs half the movement. Stunned / Paralysed (震慑 / 麻痹): can do nothing, fail STR and DEX saves. Incapacitated: no actions or reactions. Restrained (束缚): cannot move. Charmed (被魅惑): cannot attack the charmer. Invisible (隐形): ends when it attacks, casts or is hit. Hidden (躲藏, Hide is an action): advantage on the first attack, which reveals you; in plain view and without darkness or fog you are spotted at once.
+Sanctuary (庇护术): the creature cannot be targeted directly until it attacks or harms someone; area spells still hit it.
+Damage types: resistance halves, vulnerability doubles, immunity stops a type. Read the resistances in `combat` / `examine` and hit with a type that is not resisted. Enchanted (+1 or better) weapons and spells count as magical.
+Surfaces: Wet (濡湿, from water): resists fire, puts out Burning, but takes double lightning and cold damage; lightning on water electrifies it, cold freezes it to ice. Grease and ice can knock walkers Prone; grease, oil and alcohol burn. Fire, acid, poison clouds and electrified water hurt whoever stands or ends a turn in them: do not walk through them, and do not leave yourself standing in one. Darkness and fog clouds blind those inside (and block sight).
+Spell slots come back only with a long rest (warlock slots also with a short rest). Cantrips are free and grow at levels 5 and 10. Upcasting spends a higher slot for more effect. Slots are scarce: do not spend high-level ones on weak enemies. Many area spells (Fireball, Shatter, Thunderwave, Cloud of Daggers) hit allies in the area too: check where the human and the party stand first.
+Throw (action): any item or a light creature; a creature thrown lands Prone.
+With these tools: Dash (Shout_Dash), Disengage (Shout_Disengage), Jump (Projectile_Jump), Shove (Target_Shove), Help (Target_Help) and Dip (Target_Dip) are in `spells`: pass the id to `cast`. Hide is `sneak`, Throw is `throw`, potions are `use_item`.
+"""
+
 mcp = MCPServer("bg3-coop", instructions=INSTRUCTIONS)
 game = Game()
 ids = Handles()
@@ -150,17 +185,41 @@ def _call(op: str, args: dict | None = None, context: str = "server") -> Any:
     return ids.shorten(game.call(op, args, context))
 
 
+# Events that must reach the agent at once: a long action stops waiting on its job for them.
+URGENT = {"combat_started", "dialogue_started", "your_turn", "summon_turn", "controlled",
+          "stealth_lost"}
+
+
 def _run_job(start: dict, wait_s: float) -> dict:
-    """Poll a game job until it ends or wait_s passes."""
+    """Poll a game job until it ends or wait_s passes, or until something urgent happens or the
+    human writes (the job goes on; the result says so)."""
     job_id = start["job"]
     deadline = time.monotonic() + max(0.5, min(wait_s, 45))
+    polls = 0
     while True:
         view = game.call("job", {"id": job_id})
         if view["status"] != "running":
             return ids.shorten(view)
         if time.monotonic() >= deadline:
             return {"id": job_id, "status": "running", "hint": "still going: call wait or job_status"}
+        polls += 1
+        if polls % 2 == 0 and _something_came_up():
+            time.sleep(0.4)  # what came up may be the job's own doing (talk opens a dialogue)
+            view = game.call("job", {"id": job_id})
+            if view["status"] != "running":
+                return ids.shorten(view)
+            return {"id": job_id, "status": "running",
+                    "hint": "still going, but something came up (events / human_says): deal with it, "
+                            "then job_status to keep waiting on it, or stop"}
         time.sleep(0.25)
+
+
+def _something_came_up() -> bool:
+    try:
+        _fetch_events()
+    except GameError:
+        pass
+    return any(e.get("kind") in URGENT for e in _events["held"]) or chat.listen()
 
 
 trader = Trader(game, ids, chat, _run_job)
@@ -183,6 +242,9 @@ def _safe(fn):
             result = fn(*a, **kw)
         except GameError as e:
             result = {"error": str(e)}
+        result = _turn_feed(fn.__name__, result)
+        result = _hand_events(result)
+        result = _combat_basics(result)
         picture = result.pop(SHOT, None) if isinstance(result, dict) else None
         if chat.listen(chat.note_tool(fn.__name__, result)):
             result = _with(result, "human_says", chat.take_heard())
@@ -191,6 +253,73 @@ def _safe(fn):
             result = _with(result, "update", news + " Tell the human once, in their language.")
         return _with_picture(result, picture) if picture else result
     return inner
+
+
+def _hand_events(result: Any) -> Any:
+    """Whatever happened in the game since the last result rides along with this one, whatever the
+    tool: a dialogue, a fight starting or ending, someone downed must not wait for the next `wait`."""
+    try:
+        _fetch_events()
+    except GameError:
+        pass
+    if not (_events["held"] or _events["missed"]):
+        return result
+    earlier = result.get("events", []) if isinstance(result, dict) else []
+    return _with(result, "events", earlier + _take_events())
+
+
+_basics: dict = {"given": False}  # combat_basics already handed over in this fight
+
+
+def _combat_basics(result: Any) -> Any:
+    """The first result of each fight carries the rules of combat, whatever the tool: with the
+    `combat_started` event, or with the first `your_turn` when that event never reached us (the
+    bridge started mid-fight). Once per fight."""
+    if not isinstance(result, dict):
+        return result
+    due = False
+    for e in result.get("events", []):
+        kind = e.get("kind") if isinstance(e, dict) else None
+        if kind == "combat_started":
+            _basics["given"], due = False, True
+        elif kind == "combat_ended":
+            _basics["given"], due = False, False
+    if "your_turn" in result:
+        due = True
+    if due and not _basics["given"]:
+        _basics["given"] = True
+        result = _with(result, "combat_basics", COMBAT_BASICS.splitlines())
+    return result
+
+
+_fed: dict = {"turn": None}  # (epoch, n) of the agent's turn already handed over
+
+
+def _turn_feed(tool: str, result: Any) -> Any:
+    """The first result of each of the agent's combat turns, whatever the tool, carries the whole
+    picture: the combat overview (`your_turn`) and a screenshot. The agent cannot skip it."""
+    try:
+        t = game.call("turn_check")
+    except GameError:
+        return result
+    if not (isinstance(t, dict) and t.get("my_turn")):
+        return result
+    key = (t.get("epoch"), t.get("n"))
+    if key == _fed["turn"]:
+        return result
+    _fed["turn"] = key
+    if tool != "combat" or not isinstance(result, dict) or "error" in result:
+        try:
+            view: Any = _combat_view()
+        except GameError as e:
+            view = {"error": str(e)}
+        if isinstance(view, dict):
+            view = {"note": "it is your turn: this is the fight now (it comes once per turn, with the "
+                            "first result of the turn)", **view}
+        result = _with(result, "your_turn", view)
+    shots.turn_over()
+    shots.attach(result, SHOT)
+    return result
 
 
 def _with_picture(result: Any, jpeg: bytes) -> CallToolResult:
@@ -211,14 +340,48 @@ def _target(args: dict, target: str, x: float | None, y: float | None, z: float 
     return args
 
 
+def _as(args: dict, summon: str) -> dict:
+    """Have one of your summons (`your_summons` in combat) do it instead of your character."""
+    if summon:
+        try:
+            args["as"] = ids.resolve(summon)
+        except GameError:
+            args["as"] = summon.strip()  # a name: the game side matches it
+    return args
+
+
 # Event cursor. The epoch changes whenever the game's Lua state is fresh (save load),
 # which restarts event numbering.
-_events = {"epoch": None, "seq": 0}
+# Fetched events wait in `held` until a tool result hands them over, so none is skipped.
+_events: dict = {"epoch": None, "seq": 0, "held": [], "missed": 0}
 
 
 def _mark_events_seen() -> None:
     got = game.call("events", {"since": 1 << 30, "epoch": _events["epoch"]})
-    _events["epoch"], _events["seq"] = got.get("epoch"), got.get("latest", 0)
+    _events.update(epoch=got.get("epoch"), seq=got.get("latest", 0), held=[], missed=0)
+
+
+def _fetch_events() -> None:
+    args = {"since": _events["seq"], "epoch": _events["epoch"]}
+    if _events["epoch"] is None:  # first look in this bridge: skip the old backlog
+        args["max_age_ms"] = 30_000
+    got = game.call("events", args)
+    fresh = got.get("events", [])
+    same = _events["epoch"] is not None and got.get("epoch") == _events["epoch"]
+    if same and fresh and fresh[0].get("seq", 0) > _events["seq"] + 1:  # the game keeps the last 200
+        _events["missed"] += fresh[0]["seq"] - _events["seq"] - 1
+    _events["epoch"], _events["seq"] = got.get("epoch"), got.get("latest", _events["seq"])
+    _events["held"] += fresh
+
+
+def _take_events() -> list:
+    """Every event since the last result, oldest first."""
+    out = ids.shorten([{"kind": e["kind"], **(e.get("data") or {})} for e in _events["held"]])
+    if _events["missed"]:
+        out.insert(0, {"kind": "missed", "count": _events["missed"],
+                       "note": "older events were lost: check status and combat"})
+    _events["held"], _events["missed"] = [], 0
+    return out
 
 
 # ---------------------------------------------------------------- setup
@@ -227,8 +390,9 @@ def _mark_events_seen() -> None:
 @mcp.tool()
 def rules() -> str:
     """How to play alongside the human. Read this first if your client did not already show you
-    the bg3-coop server instructions ("You are playing Baldur's Gate 3 together with a human")."""
-    return INSTRUCTIONS
+    the bg3-coop server instructions ("You are playing Baldur's Gate 3 together with a human"),
+    followed by the rules of combat that come with the start of every fight."""
+    return INSTRUCTIONS + "\n## Combat basics (from bg3.wiki)\n" + COMBAT_BASICS
 
 
 @mcp.tool()
@@ -282,31 +446,53 @@ def _combat_rows() -> Any:
     return _call("combat")
 
 
+def _combat_view() -> Any:
+    r = _combat_rows()
+    if not isinstance(r, dict):
+        return r
+    if r.get("order"):
+        traits = views.traits_lines(r["order"])
+        effects = views.status_effect_lines(r["order"])
+        moves = r.get("movement_m") if r.get("my_turn") and not r.get("turn_ended") else None
+        r["order"] = [views.fighter_line(f, moves) for f in r["order"]]
+        if traits:
+            r["enemy_traits"] = traits
+        if effects:
+            r["status_effects"] = effects
+    if r.get("changes_since_your_last_turn"):
+        r["changes_since_your_last_turn"] = [views.change_line(c) for c in r["changes_since_your_last_turn"]]
+    if r.get("your_summons"):
+        r["your_summons"] = [views.summon_line(x) for x in r["your_summons"]]
+    return r
+
+
 @mcp.tool()
 @_safe
 def combat() -> Any:
     """In combat: the turn order (highest initiative first, `current` = whose turn it is) with each
-    fighter's HP, statuses, concentration and distance, plus enemies' damage resistances, immunities,
-    vulnerabilities and status immunities (`immune_to`); your movement (metres), actions, bonus actions
-    and reactions left; and `since_your_last_turn`, what everyone did since your previous turn
-    (`no_damage` = an attack that missed, a save that was passed, or an immunity). One line per
-    fighter; `>>` marks whose turn it is. Once per turn of yours it comes with a screenshot of the game."""
-    r = _combat_rows()
-    if isinstance(r, dict) and r.get("order"):
-        r["order"] = [views.fighter_line(f) for f in r["order"]]
-    if isinstance(r, dict) and r.get("my_turn") and not r.get("turn_ended"):
-        shots.attach(r, SHOT)
-    elif isinstance(r, dict):
-        shots.turn_over()
-    return r
+    fighter's HP, statuses, concentration, distance, position (x/y/z, for spells cast at a spot) and
+    `walk` (the movement it takes you to get next to them; on your turn, whether it is within what you
+    have left; "no way there on foot" needs a jump or flight), enemies' level, AC, damage resistances,
+    immunities, vulnerabilities and status immunities (`immune_to`), and party members who are
+    DOWNED or DEAD; `enemy_traits`, each enemy's passive traits, the first time it is listed in a
+    fight (one line for enemies of a kind); `status_effects`, what the enemies' statuses do, the
+    first time each shows up in a fight; your movement (metres), actions, bonus actions and reactions left; `your_summons` and
+    whether it is their turn; `since_your_last_turn`, what everyone did since your previous turn
+    (`no_damage` = an attack that missed, a save that was passed, or an immunity); and
+    `changes_since_your_last_turn`, each fighter's HP, statuses gained and lost, downed or dead,
+    who joined or left the fight. One line per fighter; `>>` marks whose turn it is. The first
+    result of each of your turns, whatever the tool, carries all this as `your_turn` (and a
+    screenshot of the game)."""
+    return _combat_view()
 
 
 @mcp.tool()
 @_safe
 def examine(target: str) -> Any:
     """What the game's examine window shows about a character you can see: level, AC, ability scores,
-    damage resistances / immunities / vulnerabilities, status immunities, statuses, concentration and
-    passive traits with a short description."""
+    damage resistances / immunities / vulnerabilities, status immunities, statuses, concentration,
+    passive traits with a short description, where they are (`pos`) and `walk_m` (the movement it takes
+    you to get next to them; false: no way there on foot)."""
     return _call("examine", {"target": ids.resolve(target)})
 
 
@@ -347,19 +533,20 @@ def look(radius: float = 40, full: bool = False) -> Any:
     return seen.show(_look_rows(radius), game.agent_name, radius, full)
 
 
-def _spell_rows(kind: str = "") -> Any:
-    return _call("spells", {"kind": kind} if kind else {})
+def _spell_rows(kind: str = "", summon: str = "") -> Any:
+    return _call("spells", _as({"kind": kind} if kind else {}, summon))
 
 
 @mcp.tool()
 @_safe
-def spells(kind: str = "") -> Any:
+def spells(kind: str = "", summon: str = "") -> Any:
     """Actions you can use today: attacks, cantrips, prepared spells, Dash, Jump..., one line each:
     the id to pass to `cast`, the name, then kind, cost, range in metres, the slot levels you can
     upcast to and, for spells that make you pick a form, the `variants` to cast instead. A line
-    marked NOT NOW says why it cannot be used at the moment. `kind` filters: attack, heal, buff,
-    control, summon, utility."""
-    rows = _spell_rows(kind)
+    marked NOT NOW says why it cannot be used at the moment. Spells marked "no target: around you"
+    take effect within that radius of you wherever you aim. `kind` filters: attack, heal, buff,
+    control, summon, utility. `summon` lists what one of your summons can do instead."""
+    rows = _spell_rows(kind, summon)
     if isinstance(rows, dict):
         return rows
     return [views.spell_line(r) for r in rows]
@@ -415,29 +602,16 @@ def reactions(mode: str = "", reaction: str = "") -> Any:
 @_safe
 def wait(seconds: float = 10) -> Any:
     """Let game time pass (up to 30 s) and report what happened: new events, messages from the human
-    and a short status (`status` has position, resources and statuses). Returns early when something happens (your turn, combat, a dialogue, the human
-    writes)."""
+    and a short status (`status` has position, resources and statuses). Returns within a second
+    when something happens (your turn, combat, a dialogue, the human writes)."""
     deadline = time.monotonic() + max(1, min(seconds, 30))
-    events: list = []
     while True:
-        args = {"since": _events["seq"], "epoch": _events["epoch"]}
-        if _events["epoch"] is None:  # first look in this bridge: skip the old backlog
-            args["max_age_ms"] = 30_000
-        got = game.call("events", args)
-        _events["epoch"], _events["seq"] = got.get("epoch"), got.get("latest", _events["seq"])
-        events += got.get("events", [])
-        if events or chat.listen() or time.monotonic() >= deadline:
+        _fetch_events()
+        if _events["held"] or chat.listen() or time.monotonic() >= deadline:
             break
-        time.sleep(1.0)
+        time.sleep(0.5)
     s = _call("status")
-    events = ids.shorten([{"kind": e["kind"], **(e.get("data") or {})} for e in events])
-    out = {"events": events, "status": views.brief(s)}
-    kinds = {e["kind"] for e in events}
-    if kinds & {"your_turn", "combat_ended"}:
-        shots.turn_over()
-    if "your_turn" in kinds and isinstance(s, dict) and s.get("my_turn"):
-        shots.attach(out, SHOT)
-    return out
+    return {"events": _take_events(), "status": views.brief(s)}
 
 
 @mcp.tool()
@@ -511,7 +685,7 @@ def wiki(query: str, offset: int = 0) -> Any:
 @_safe
 def move(target: str = "", direction: str = "", meters: float = 8, to_human: bool = False,
          x: float | None = None, y: float | None = None, z: float | None = None,
-         sneak: bool = False, even_if_seen: bool = False) -> Any:
+         sneak: bool = False, even_if_seen: bool = False, summon: str = "") -> Any:
     """Walk. Give exactly one of: `target` (an id from look), `direction` (N NE E SE S SW W NW) with
     `meters` (max 30: you go as far that way as you can walk, not round through a door), `to_human`
     (go to the human's character), or x/y/z. Waits up to ~30 s. The way is planned first: when there
@@ -519,8 +693,8 @@ def move(target: str = "", direction: str = "", meters: float = 8, to_human: boo
     `nearest`, the closest spot you can walk to (`use` and `talk` do the same).
     `sneak` (while sneaking): the way is checked first and refused if it crosses someone's view
     (`seen_at`, `would_see_you`; `even_if_seen` walks anyway), and the walk stops just short of a view
-    it is about to enter (people turn and walk about)."""
-    args: dict = {"meters": meters}
+    it is about to enter (people turn and walk about). `summon` walks one of your summons instead."""
+    args: dict = _as({"meters": meters}, summon)
     if sneak:
         args["sneak"] = True
     if even_if_seen:
@@ -697,14 +871,19 @@ def travel(to: str = "camp", waypoint: str = "") -> Any:
 @mcp.tool()
 @_safe
 def cast(spell: str, target: str = "", x: float | None = None, y: float | None = None,
-         z: float | None = None, level: int = 0, even_if_allies: bool = False) -> Any:
+         z: float | None = None, level: int = 0, even_if_allies: bool = False, summon: str = "") -> Any:
     """Use an action by its `spell` id from spells (e.g. Target_MainHandAttack): on `target`, at x/y/z,
     or on yourself when neither is given. `level` upcasts a spell with a higher slot. Spends the action,
     bonus action and spell slot it costs; in combat only on your turn. The game rolls attacks and saving
-    throws as usual, so it can miss. Out of range, you walk up to the target first. A harmful area spell
-    (fireball, cone, shout) is refused while party members stand in the area, naming them; aim elsewhere,
-    or pass `even_if_allies` to cast it anyway."""
-    args: dict = {"spell": spell}
+    throws as usual, so it can miss. Out of range or sight, the game walks you up first (the result's
+    `moved_m` says how far). A spell on a dead character is refused unless it is meant for the dead
+    (revivals). A shout (`spells` says "no target: around you") takes effect around you whatever you
+    aim at: the result lists who was within reach (`around_you`), and a healing shout is refused
+    when no hurt party member is in reach. A harmful area spell (fireball, cone, shout) is refused
+    while party members stand in the area, naming them; aim elsewhere, or pass `even_if_allies` to
+    cast it anyway. `summon` has one of your summons cast one of its own actions (see
+    `spells(summon=...)`) on its turn."""
+    args: dict = _as({"spell": spell}, summon)
     if even_if_allies:
         args["even_if_allies"] = True
     if level:
@@ -714,13 +893,11 @@ def cast(spell: str, target: str = "", x: float | None = None, y: float | None =
 
 @mcp.tool()
 @_safe
-def end_turn() -> Any:
-    """End your combat turn. Party members next to you in initiative share the turn, so status keeps
-    showing the turn as theirs (turn_ended, waiting_for_party) until they finish too."""
-    r = _call("end_turn")
-    if isinstance(r, dict) and r.get("ended"):
-        shots.turn_over()
-    return r
+def end_turn(summon: str = "") -> Any:
+    """End your combat turn, or with `summon` that summon's turn. Party members next to you in
+    initiative share the turn, so status keeps showing the turn as theirs (turn_ended,
+    waiting_for_party) until they finish too."""
+    return _call("end_turn", _as({}, summon))
 
 
 @mcp.tool()
@@ -753,9 +930,9 @@ def sneak(on: bool = True, anyway: bool = False) -> Any:
 
 @mcp.tool()
 @_safe
-def stop() -> Any:
-    """Stop whatever your character is doing."""
-    return _call("stop")
+def stop(summon: str = "") -> Any:
+    """Stop whatever your character (or `summon`) is doing."""
+    return _call("stop", _as({}, summon))
 
 
 # ---------------------------------------------------------------- dialogue and chat

@@ -22,7 +22,7 @@ whatever else the game sends meanwhile (log lines, a paused context). Game wraps
 
 Command line, for poking at the game while developing:
 
-    python -m bg3coop.luadebug [--port 9998] [--server] 'return Ext.Utils.Version()'
+    python -m bg3coop.remote_lua [--port 9998] [--server] 'return Ext.Utils.Version()'
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ Field = Union[int, bytes, str]
 Message = dict  # field number -> list of raw values (int for varints, bytes otherwise)
 
 
-class LuaDebugError(Exception):
+class RemoteLuaError(Exception):
     """The game answered with an error: a Lua error message or a refusal status."""
 
 
@@ -176,7 +176,7 @@ def value_text(value: Message) -> str:
 # ---------------------------------------------------------------- client
 
 
-class LuaDebugClient:
+class RemoteLua:
     """One connection to the debugger port. Not for concurrent use from several threads without a
     lock around it (evaluate() takes one anyway)."""
 
@@ -231,7 +231,7 @@ class LuaDebugClient:
             except OSError:
                 pass
 
-    def __enter__(self) -> LuaDebugClient:
+    def __enter__(self) -> RemoteLua:
         self.connect()
         return self
 
@@ -243,7 +243,7 @@ class LuaDebugClient:
         """Run `code` in the "server" or "client" Lua state and return the result as text.
 
         statement=True runs it as a chunk (use `return` to get a value); False evaluates one expression.
-        Raises LuaDebugError for errors and refusals, TimeoutError when the game does not answer in
+        Raises RemoteLuaError for errors and refusals, TimeoutError when the game does not answer in
         time (the connection is closed then), ConnectionError when the connection is gone.
         """
         if context not in CONTEXT_IDS:
@@ -266,13 +266,13 @@ class LuaDebugClient:
                         answer = get_message(msg, EVALUATE_RESPONSE)
                         error = get_text(answer, 2)
                         if error:
-                            raise LuaDebugError(error)
+                            raise RemoteLuaError(error)
                         return value_text(get_message(answer, 1))
                     if RESULT in msg:
                         status = get(get_message(msg, RESULT), 1, 0)
                         if status:
                             name = STATUS_NAMES[status] if status < len(STATUS_NAMES) else f"status {status}"
-                            raise LuaDebugError(name)
+                            raise RemoteLuaError(name)
             except socket.timeout as e:
                 self.close()
                 raise TimeoutError(f"the game did not answer within {timeout} s") from e
@@ -325,7 +325,7 @@ class LuaDebugClient:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m bg3coop.luadebug", description="Run Lua in the game.")
+    ap = argparse.ArgumentParser(prog="python -m bg3coop.remote_lua", description="Run Lua in the game.")
     ap.add_argument("code", help='Lua code, e.g. "return 1 + 1"; "-" reads it from stdin')
     ap.add_argument("--server", action="store_true", help="server Lua state (needs a loaded save)")
     ap.add_argument("--host", default="127.0.0.1")
@@ -336,9 +336,9 @@ def main(argv: list[str] | None = None) -> int:
     # A bare expression ("Ext.Utils.Version()") is evaluated as one; anything else runs as a chunk.
     statement = args.code == "-" or code.lstrip().startswith("return") or "\n" in code.strip()
     try:
-        with LuaDebugClient(args.host, args.port) as client:
+        with RemoteLua(args.host, args.port) as client:
             print(client.evaluate(code, "server" if args.server else "client", args.timeout, statement))
-    except LuaDebugError as e:
+    except RemoteLuaError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     except OSError as e:

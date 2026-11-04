@@ -15,7 +15,7 @@
 
 ```
 bg3-coop-agent/
-├─ src/bg3coop/          # 核心：game.py、luadebug.py、lua/、MCP 服务器、setup/doctor 命令
+├─ src/bg3coop/          # 核心：game.py、remote_lua.py、lua/、MCP 服务器、setup/doctor 命令
 ├─ integrations/
 │  ├─ dsh/               # npm 包：package.json（dsh.bundle）+ cordis.patch.yml + locale/ + assets/
 │  ├─ claude-code/       # .claude-plugin/plugin.json + .mcp.json + assets/
@@ -65,6 +65,8 @@ BG3 没有原生文字聊天，所以输入框只能自己做；agent 向人类�
 - [x] 战斗截图：轮到 agent 的回合时，`wait`（`your_turn` 事件）或 `combat` 中先到的那个附一张游戏画面（JPEG，宽 1280，质量 60，约 150 KB），每回合一张。`wincap.py` 用 ctypes 直接调 Windows API（GDI 截、GDI+ 编码），在 MCP 进程里完成，不开新进程和窗口；游戏不在前台或最小化时不截，只写原因。`BG3COOP_SCREENSHOTS=0` 关闭（给不能看图的模型）
   - [x] 实测（2026-11-04）：独占全屏 2560×1440 能截到画面、不是黑屏；连截 3 次游戏一直在前台，没被最小化
   - [ ] 没实测：dsh（DeepSeek）收到图片会怎样；正式路径（MCP 服务器在 Windows 本机）只在开发路径（pythonw 计划任务）下跑过同一份截图代码
+- [x] 战斗规则：每场战斗开头那条结果附 `combat_basics`（按 bg3.wiki 整理的动作经济、命中与豁免、优劣势、借机攻击、倒地与死亡豁免、专注、常见状态、地表、伤害抗性，状态带游戏里的中文名），bridge 起在战斗中途时随第一个 `your_turn` 补发；`rules` 也带上。守则里原来那几条战斗规则并进去
+  - [ ] 没在真实战斗里看过 agent 收到它的样子
 - [x] 敌人的抗性和特性：新增 `examine`（等级、AC、属性、伤害抗性/免疫/易伤、状态免疫、被动特性和说明），`combat` 里敌人附带抗性和状态免疫
 - [x] 新事件：`downed`（队友或人类倒地）、`controlled` / `control_ended`（自己被沉睡、定身、魅惑等，按状态的 `StatusGroups` 判断）
 - [x] 范围法术施放前检查范围内有没有队友：伤害、控制、减益类的范围法术（含卷轴）会波及队友时先拒绝并列出名字，`even_if_allies` 强制施放；按 stats 算圆形、锥形、长条，跳过本身不伤队友的（`not Ally()`、只对敌人、法术塑形、施法者身上的光环），只影响亡灵等类型的只算该类型队友
@@ -189,19 +191,47 @@ BG3 没有原生文字聊天，所以输入框只能自己做；agent 向人类�
 
 ### 战斗实测发现的问题（2026-11-04，奥林，硬核难度）
 
-- [ ] 回合开始时强制喂数据：现在截图和战况要 agent 自己调 `wait`（收到 `your_turn`）或 `combat` 才有，漏调就看不到。改成轮到 agent 时，不管它调的是哪个工具，第一个结果都强制附上截图和完整战况，不能跳过
-- [ ] 开战时自动读一遍所有敌人：等级、HP、AC、抗性/免疫、状态、专注、特性（现在要逐个 `examine`），在 agent 第一个回合一起给出
-- [ ] 战斗中持续记录：敌人和队友身上状态的增减（谁上了什么、什么到期了）、HP 变化、倒地、死亡、召唤物出现和消失，攒到 agent 回合开始时一次给出，不只记施法和伤害
-- [ ] 人物死亡要知道：人类从倒地变成死亡时没有任何事件，`wait` 只报过 `downed`，agent 以为还能奶，对死人连放两个治疗。要报 `died`（含人类和队友），`status`/`combat` 里也标出谁已死亡
-- [ ] 回合之外发生的事记全：别人回合里发生的事（死亡豁免失败、被打死、状态变化）都要进 `since_your_last_turn`，现在漏了人类的死亡
-- [ ] `combat` 的 `order` 里倒地或死亡的人类整行消失，看不出人类状态。倒地和死亡的人也要列出并标明
-- [ ] `cast` 对无效目标不拦：目标已死亡时治疗照样放出去，白花动作和法术位，也不报错。施放前检查目标状态（死亡只能用复活类）
-- [ ] 以自己为中心的范围法术（Shout，如群体治愈真言、精魂守卫）：游戏规则就是以施法者为中心、固定半径，没有目标，也不会走过去。问题在工具不说：agent 传了 `target` 会被默默忽略，以为奶到了。改成：对这类法术传 `target` 时说明 `target` 无效；施放前报出半径内会受影响的人（友方治疗法术没有一个队友在范围内时拒绝），让 agent 自己先 `move` 再放；`spells` 里标出这类法术的半径
-- [ ] 召唤物的控制：agent 召唤的东西（如异界誓盟的使徒）只能由人类控制。要让 agent 能操作自己的召唤物，至少能在它的回合下指令，不用 `set_agent` 来回切
-  - 临时用 `set_agent` 切到召唤物时：`notes` 返回的是原角色的 persona；切回原角色后她本回合已结束，却显示 `my_turn: true`，要再 `end_turn` 一次
-- [ ] 战斗记录里召唤物造成的伤害记成召唤者（`by 影心`），要写召唤物自己的名字
-- [ ] 核实：`status.human.dist` 和 `cast` 结果里的 `pos` 整场几乎不变（12.4 → 21.7，坐标一直是同一个），可能是旧值
-- [ ] 核实：施放异界誓盟时影心自己走了 3.8 米（移动力 9 → 5.2），目标点明明在射程内
+修复都在 server v71，离线测试覆盖；第二场实测（同日，v71–74）确认了大部分，见最后一项和下一节。
+
+- [x] 回合开始时强制喂数据：轮到 agent 后，不管它调的是哪个工具，第一个结果都带 `your_turn`（完整战况）和截图，每回合一次（`turn_check` 按回合计数判断，读档后计数重来也不会漏）
+- [x] 开战时自动读一遍所有敌人：`combat` 的敌人行带等级、AC、HP、抗性/免疫、状态、专注；被动特性（`enemy_traits`）每场战斗第一次列出时给一次，随第一回合的 `your_turn` 一起到
+- [x] 战斗中持续记录：agent 回合结束时给所有人拍快照，下回合 `changes_since_your_last_turn` 逐人列出 HP 变化、新上/到期的状态、倒地/死亡/站起来、加入（召唤物、援兵）和离开战斗的人
+- [x] 人物死亡要知道：倒地后死亡豁免失败死掉，Osiris 不再发 `Died`。改为每次 `wait` 轮询和倒地状态移除时检查队伍，新死的报 `died`（人类带 `human: true`），每人只报一次；`status.human` 有 `downed`/`dead`
+- [x] 回合之外发生的事记全：上面的死亡检查也写进 `since_your_last_turn`，其余变化由快照对比补全
+- [x] `combat` 的 `order` 里倒地或死亡的人类整行消失：队伍里倒地或死亡的人不管游戏还算不算在战斗里都列出，标 DOWNED / DEAD
+- [x] `cast` 对无效目标不拦：目标已死亡、法术条件写着 `not Dead()` 或是治疗法术时拒绝，不花资源；复活、交谈亡魂、操纵死尸照常（实机核对了这几个法术的条件）
+- [x] 以自己为中心的范围法术（Shout）：传了 `target` 时丢掉并在结果里说明，结果列出半径内的人（`around_you`）；治疗类在半径内没有受伤的队友（含自己）时拒绝，并报出队友多远；`spells` 写「no target: around you within N m」。治疗看法术效果里有没有 `RegainHitPoints`：实机发现黎明曙光（伤害技能）的 VerbalIntent 也是 Healing
+- [x] 召唤物的控制：`spells`/`move`/`cast`/`end_turn`/`stop` 带 `summon`（短 id 或名字）就由召唤物来做，资源扣在召唤物身上；召唤物的回合开始时 `wait` 报 `summon_turn`；`combat` 有 `your_summons`（是不是它的回合、剩余资源）。召唤物从召唤者的 `SummonContainer` 读
+  - 不再需要 `set_agent` 切过去，所以 persona 错位的问题没了；「已结束回合」改为每个角色分开记，召唤物结束回合不会让 agent 自己显示 `my_turn: true`
+- [x] 战斗记录里召唤物造成的伤害记成召唤者：`AttackedBy` 的第二个参数是召唤者，第三个才是动手的；现在写「使徒 (your summon)」
+- [x] 核实：`status.human.dist` 和 `cast` 结果里的 `pos`：实机比对 `Osi.GetPosition` 和实体坐标一致，不是旧值。`cast` 结果里的 `pos` 是施法者自己的位置（影心没动，所以一直不变），容易误读，已从 `cast` 结果里去掉
+- [x] 核实：施放异界誓盟时影心自己走了 3.8 米：`cast` 结果在被游戏挪动时给出 `moved_m`。原因后来查明（下一节 d）：召唤法术不能以角色为目标
+- [x] 实机战斗验证（第二场）：`your_turn` 和截图每回合第一个结果带一次、`changes_since_your_last_turn`、召唤物用 `summon` 施法和结束回合、召唤物的伤害记在它名下、召唤物结束回合不影响 agent 的 `my_turn`、Shout 对不受伤的队伍拒绝、`spells` 的 around you 半径都正常
+  - [ ] 还没碰到：人类倒地后死亡的 `died`、对死人施法被拒
+
+### 第二场战斗实测发现的问题（2026-11-04，奥林，硬核难度）
+
+server v72–76，离线测试覆盖（`uv run pytest` 174 个、Python 3.10 168 个 + 6 个跳过）。v76 已注入，只在非战斗时核对了游戏数据，战斗中的部分见最后一项。
+
+- [x] 召唤物找不到：`SummonContainer.Characters` 是空的（炽焰法球在 `Items` 里），`IsSummon.Owner` 指向召唤物自己。改为再用 `Osi.CharacterGetOwner(u) == agent` 找（v72 实机能找到）
+- [x] Shout 用 `UseSpell(me, spell, me)` 只作用于施法者：群体治愈真言没奶到 17 米外的 Saber。改成在施法者脚下 `UseSpellAtPosition`，v74 实机奶到了 Saber 和卡菈克
+- [x] 治疗类 Shout 的「受伤」：HP 低于 90% 才算（之前 85/86 也算）
+- [x] 状态名去重，`combat` 每行最多 12 个：「难度：硬核」重复两次挤掉了奥林的「不可撼动」。头像上不显示的状态（`DisablePortraitIndicator`：难度：硬核、蝌蚪能力的移位）不再列出
+- [x] `status` 有 `summon_turn`（正在行动的召唤物名字）
+- [x] a. 按位置施放的法术（Shout、炽焰法球）不触发 `UsingSpellOnTarget`，战斗记录里少了「you cast」：在 `CastedSpell` 里补记，Shout 写上半径内的人；之后再来的按目标事件并进同一行
+- [x] b. 敌人状态只有名字：`combat` 加 `status_effects`，敌人状态的简短说明（状态的 Description），每场战斗每种一次
+- [x] c. 同类敌人（巴尔之镰×6）特性每人一行：同一组特性合成一行「巴尔之镰 x6 (e3, e4, ...): ...」，之后再列出的同类不再重复
+- [ ] d. 施放炽焰法球（目标 13 米外的敌人，射程 18）影心自己走了 4.2 米（实机仍会走，见下）：召唤法术（炽焰法球、异界誓盟、信仰守卫）带 `CannotTargetCharacter`，条件是 `not Character()` 和 `CanStand`，以角色为目标是无效目标。`target` 给角色时改为施放在目标身前 1.5 米的空地上（离施法者近的一侧、在射程内），结果 `note` 说明
+- [x] e. `changes_since_your_last_turn` 里一闪而过的状态：跳过 `DisableCombatlog` 的（巨武器大师：附赠攻击）和只解锁一个动作的（`Boosts` 只有 `UnlockSpell`：武艺：徒手打击）
+- [x] f. 卡菈克的伤害很多是 `damage 1`：一次攻击按伤害类型各发一次 `AttackedBy`（推测是砍伤加火焰）。同一人打同一人 300 毫秒内的合成一行、伤害相加（实机没核对参数，离线测试按这个假设）
+- [x] g. 召唤物被游戏挪动时 `why_moved` 写召唤物的名字，不写 you
+- [x] 实机战斗验证（第三场，v76，奥林战打赢）：湮灭波、群体治愈真言在脚下放能打到 / 奶到半径内所有人（7 米外的 Saber 从 1 奶到 50）；「you cast 湮灭波」记录带范围内的人；`status_effects`（不可撼动、庇护术等）和同类敌人特性一行都在第一回合的 `your_turn` 里；奥林身上一次湮灭波记成一行 `damage 2`（光耀 1 + 雷鸣 1，合并正确）
+  - [ ] 精魂守卫没用上，没验证
+- [ ] d 没修好：炽焰法球改成在敌人身前 1.5 米的空地按位置施放（点离影心约 10.7 米，射程 18），游戏还是让影心走了 9.1 米、用光移动力。读档后在同一位置只读核对：用项目的视线检测（`clearLine` 同样的参数），从影心眼睛到落点三个高度都被挡住，所以多半是游戏为了取得视线先走过去。修法：`C.spotBy` 只取 `clearLine` 看得到的点，都看不到时报错让 agent 自己换位置（未改，等实机再验）
+- [x] 影心开战后才被拉进战斗时，`combat_started` 不发（`CombatStarted` 那一刻她还不在战斗里）：`events` 每次轮询看 agent 是否进了新的一场（`CombatGetGuidFor`），是就补发并像开战一样重置战斗记录；同一场不重复发（server v77）
+- [x] 隐身的敌人（巴尔之镰藏起来）在 `changes_since_your_last_turn` 里写成「out of the fight」：还活着、还在战斗里的写「hidden (still in the fight)」；`order` 里照旧不列看不见的人（v77）
+- [x] 治疗类 Shout 结果里的 `around_you` 也列出敌人，看着像奶了敌人：治疗类只列队友（v77）
+- [x] 游玩守则补基础规则（只写确定的）：身边有敌人（受威胁）时远程攻击和法术攻击掷骰有劣势、离开近战范围引发借机攻击（撤离可免）、豁免类法术不看 AC、庇护术不能直接指定但范围法术能打、同时只能专注一个法术、恐惧时不能移动且攻击劣势。起因：agent 走到奥林身边放灼热射线，自己猜了倒地规则还猜错。倒地对远程的影响、高地加值没写，要实机核对后再补
 
 ## 第 5 阶段：插件和公开
 

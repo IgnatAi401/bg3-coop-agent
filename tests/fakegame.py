@@ -12,7 +12,7 @@ from pathlib import Path
 
 import lupa.lua54 as lupa
 
-from bg3coop import luadebug as ld
+from bg3coop import remote_lua as ld
 
 HERE = Path(__file__).parent
 

@@ -42,19 +42,45 @@ def bag_line(i: dict) -> str:
     return f"{i['id']} {i.get('name', '?')}{count} ({what})"
 
 
-def fighter_line(f: dict) -> str:
+def where(pos: Any) -> str:
+    return "x={} y={} z={}".format(*pos) if isinstance(pos, (list, tuple)) and len(pos) == 3 else ""
+
+
+def walk_text(walk: Any, movement: float | None = None) -> str:
+    """How far you would walk to stand next to them (the movement it takes)."""
+    if walk is False:
+        return "no way there on foot"
+    if walk is None:
+        return ""
+    if movement is not None:
+        return f"walk {walk} m ({'within' if walk <= movement + 0.1 else 'beyond'} your movement)"
+    return f"walk {walk} m"
+
+
+def fighter_line(f: dict, movement: float | None = None) -> str:
     rel = "you" if f.get("rel") == "you" else ("the human" if f.get("human") else f.get("rel", "?"))
+    if f.get("your_summon"):
+        rel = "your summon"
     parts = [rel]
-    if f.get("hp") is not None and f.get("max_hp"):
+    if f.get("level") is not None:
+        parts.append(f"level {f['level']}")
+    if f.get("ac") is not None:
+        parts.append(f"AC {f['ac']}")
+    if f.get("dead"):
+        parts.append("DEAD")
+    elif f.get("hp") is not None and f.get("max_hp"):
         parts.append(f"HP {f['hp']}/{f['max_hp']}")
     elif f.get("hp_pct") is not None:
         parts.append(f"{f['hp_pct']}% HP")
-    if f.get("downed"):
-        parts.append("downed")
+    if f.get("downed") and not f.get("dead"):
+        parts.append("DOWNED")
     if f.get("initiative") is not None:
         parts.append(f"init {f['initiative']}")
     if f.get("dist") is not None:
         parts.append(f"{f['dist']} m {f.get('dir', '')}".strip())
+    for extra in (walk_text(f.get("walk_m"), movement), where(f.get("pos"))):
+        if extra:
+            parts.append(extra)
     if f.get("concentrating"):
         parts.append(f"concentrating on {f['concentrating']}")
     for key, label in (("statuses", ""), ("resist", "resists "), ("immune", "immune to "),
@@ -62,6 +88,69 @@ def fighter_line(f: dict) -> str:
         if f.get(key):
             parts.append(label + ", ".join(f[key]))
     return f"{'>> ' if f.get('current') else ''}{f.get('id', '?')} {f.get('name', '?')} ({'; '.join(parts)})"
+
+
+def _traits_text(traits: list) -> str:
+    return "; ".join(f"{t['name']}: {t['what']}" if t.get("what") else t["name"] for t in traits)
+
+
+def traits_lines(order: list) -> list:
+    """Enemies' traits, one line per set: six of a kind share theirs ("巴尔之镰 x6 (e3, e4, ...): ...")."""
+    groups: dict = {}
+    for f in order:
+        if f.get("traits"):
+            groups.setdefault(_traits_text(f["traits"]), []).append(f)
+    out = []
+    for text, fs in groups.items():
+        names = {f.get("name") for f in fs}
+        if len(fs) > 1 and len(names) == 1:
+            who = f"{fs[0].get('name', '?')} x{len(fs)} ({', '.join(str(f.get('id', '?')) for f in fs)})"
+        else:
+            who = ", ".join(f"{f.get('id', '?')} {f.get('name', '?')}" for f in fs)
+        out.append(f"{who}: {text}")
+    return out
+
+
+def status_effect_lines(order: list) -> list:
+    """What the enemies' statuses do, each status once ("不可撼动: ...")."""
+    out, seen = [], set()
+    for f in order:
+        for x in f.get("status_info") or []:
+            if x.get("name") not in seen:
+                seen.add(x.get("name"))
+                out.append(f"{x.get('name', '?')}: {x.get('what', '')}")
+    return out
+
+
+def change_line(c: dict) -> str:
+    """One fighter's changes since the agent's last turn, from combat's snapshot comparison."""
+    parts = []
+    if c.get("joined"):
+        parts.append("joined the fight")
+    if c.get("hp"):
+        parts.append(f"HP {c['hp']}")
+    if c.get("now"):
+        parts.append("now " + ", ".join(c["now"]))
+    if c.get("no_longer"):
+        parts.append("no longer " + ", ".join(c["no_longer"]))
+    if c.get("became"):
+        parts.append(str(c["became"]).upper() if c["became"] in ("dead", "downed") else str(c["became"]))
+    return f"{c.get('who', '?')}: {'; '.join(parts)}"
+
+
+def _num(x: Any) -> str:
+    return f"{x:g}" if isinstance(x, (int, float)) else str(x)
+
+
+def summon_line(s: dict) -> str:
+    if s.get("its_turn"):
+        left = [f"{_num(s['movement_m'])} m movement" if s.get("movement_m") is not None else "",
+                f"{_num(s['actions'])} action(s)" if s.get("actions") is not None else "",
+                f"{_num(s['bonus_actions'])} bonus action(s)" if s.get("bonus_actions") is not None else ""]
+        state = "ITS TURN NOW: " + ", ".join(x for x in left if x)
+    else:
+        state = "turn ended" if s.get("turn_ended") else "not its turn"
+    return f"{s.get('id', '?')} {s.get('name', '?')} ({state})"
 
 
 def _levels(levels: list) -> str:
@@ -72,7 +161,10 @@ def _levels(levels: list) -> str:
 
 def spell_line(r: dict) -> str:
     rng = r.get("range_m")
-    parts = [r.get("kind") or "", r.get("cost") or "free", rng if rng == "self" else f"{rng} m"]
+    where = rng if rng == "self" else f"{rng} m"
+    if r.get("around_you_m"):
+        where = f"no target: around you within {r['around_you_m']} m"
+    parts = [r.get("kind") or "", r.get("cost") or "free", where]
     if r.get("upcast"):
         parts.append("upcast " + _levels(r["upcast"]))
     if r.get("variants"):
@@ -127,7 +219,7 @@ def journal_text(text: str | None, limit: int = 300) -> str | None:
 
 # What `wait` repeats every time: enough to decide whether to act. `status` has the rest
 # (position, resources, statuses, gold).
-_BRIEF = ("hp", "max_hp", "sneaking", "combat", "turn_based", "my_turn", "turn_ended", "waiting_for_party",
+_BRIEF = ("hp", "max_hp", "sneaking", "combat", "turn_based", "my_turn", "summon_turn", "turn_ended", "waiting_for_party",
           "dialog", "note", "human")
 
 

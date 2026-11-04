@@ -121,9 +121,17 @@ uv run pytest
 ### 战斗
 
 - [ ] `wait` 收到 `combat_started`、`your_turn`、`attacked`
+- [ ] 每场战斗开头那条结果（随 `combat_started`，没收到就随第一个 `your_turn`）带 `combat_basics`（bg3.wiki 的战斗规则），同一场战斗只带一次，下一场再带
+- [ ] `combat`（和 `your_turn`）每人一行带 x/y/z 和 `walk X m`（走到他身边要的移动力，自己回合标 within/beyond your movement），走不到的写 `no way there on foot`；按这个坐标对地面施放能放出去；`examine` 有 `pos` 和 `walk_m`
+- [ ] 战斗结束（打赢，或 agent 逃离而别人还在打）后，正在跑的 `wait` 马上带 `combat_ended` 返回，只一次
+- [ ] agent 正在 `look`/`status` 等别的工具时开战、开对话或轮到它：事件跟着那个工具的结果（`events`）给出，之后的 `wait` 不再重复；`move` 走长路时人类发消息或开战，`move` 一秒左右就以 `status: running` 返回并带上 `human_says`/`events`
 - [ ] 重启 bridge（新开 agent 会话）后第一次 `wait` 不带几分钟前的旧事件
 - [ ] `combat`：每人一行，当前行动者前面是 `>>`；敌人带 resists/immune to/vulnerable to/cannot be；先攻顺序和游戏界面一致，`current` 是当前行动者；敌人有 `hp_pct`、状态、`concentrating`（专注的法术）；`movement_m` 随走路减少；不在战斗时报错
-- [ ] `since_your_last_turn` 和 `your_turn` 事件的 `since_last_turn`：列出上回合以来的施法（多目标合成一行）、伤害、倒地、死亡、被控制；落空或被豁免的写成 `no_damage`
+- [ ] `since_your_last_turn`：列出上回合以来的施法（多目标合成一行）、伤害、倒地、死亡、被控制；落空或被豁免的写成 `no_damage`；召唤物造成的伤害写召唤物自己的名字；一次攻击的几种伤害（卡菈克的砍伤加火焰）合成一行、伤害是总数，不再有一串 `damage 1`；agent 放的群体治愈真言、灵体卫士、炽焰法球也有「you cast」这一行
+- [ ] `changes_since_your_last_turn`：别人回合里每个人的 HP 变化、新上和到期的状态、倒地/死亡/站起来、加入（召唤物、援兵）和离开战斗的人（藏起来的敌人写 `hidden (still in the fight)`，不说离开）；没有「武艺：徒手打击」「巨武器大师：附赠攻击」「移位」（蝌蚪能力）这类一闪而过的状态
+- [ ] 敌人行的状态里没有「难度：硬核」，同名状态只出现一次；`status_effects` 给出敌人状态的简短说明（例如奥林的「不可撼动」），每场战斗每种只一次；同类敌人（巴尔之镰×6）的 `enemy_traits` 合成一行
+- [ ] 回合开始后 agent 调的第一个工具（不管是哪个）结果里带 `your_turn`（完整战况）和一张截图；同一回合后面的结果不再带；敌人的 `enemy_traits` 每场战斗只给一次，敌人行里有等级和 AC
+- [ ] 倒地或死亡的人类、队友在 `combat` 的 `order` 里照样列出，标 DOWNED / DEAD；`status.human` 有 `downed`/`dead`
 - [ ] 探索时 agent 发现隐藏物品或陷阱（被动察觉成功），`wait` 收到 `noticed`（名字、短 id、距离方向）；失败的、别人的不报
 - [ ] 队友或人类倒地时 `wait` 收到 `downed`；agent 被催眠、定身、恐惧等控制时收到 `controlled`，解除时收到 `control_ended`
 - [ ] 不是自己的回合时，`cast`、`move` 被拒绝
@@ -138,7 +146,15 @@ uv run pytest
 - [ ] 一个 `move` 还在走时发出新的动作，旧任务的 `job_status` 是 `replaced`
 - [ ] `travel flee`：不在战斗、不是自己回合时报错；27 米内有敌人时拒绝并说要离多远；离开后逃到营地，其他人继续战斗
 - [ ] 战斗中有人喊话（受伤、施法时的台词）不会打断 `cast`/`move`，也不出现 `dialogue_started`
-- [ ] 队友倒地只收到 `downed`，真死了才有 `died`
+- [ ] 队友倒地只收到 `downed`，真死了才有 `died`（人类倒地后死亡豁免失败死掉时也有，带 `human: true`）
+- [ ] 对死亡目标施法不由 bridge 拦截，交给游戏判断；`cast` 复活法术（回生术、使徒的回生术）对死亡或倒地的队友复活，对活着的报 `not dead or downed`
+- [ ] 敌人对 agent 法术做豁免时不报 `noticed`
+- [ ] agent 站得远、开战后才被拉进战斗：`wait` 照样收到一次 `combat_started`
+- [ ] 以自身为中心的法术（群体治愈真言、灵体卫士）：治疗类的 `around_you` 只列队友；`spells` 写「no target: around you within N m」；传了 `target` 时结果说明没用上、列出 `around_you`；治疗类范围内没有受伤的队友时被拒绝并报出队友多远；黎明曙光（游戏标成治疗的伤害技能）不受影响
+- [ ] 召唤物：轮到它时 `wait` 收到 `summon_turn`、`status` 有 `summon_turn`；`combat` 有 `your_summons`（炽焰法球这种在 `SummonContainer.Items` 里的也找得到）；`spells`/`move`/`cast`/`end_turn` 带 `summon` 能操作它，资源扣在召唤物身上；召唤物结束回合后 agent 自己的回合不受影响
+- [ ] 召唤法术（炽焰法球、异界誓盟、信仰守卫）`target` 给敌人：结果 `note` 说放在敌人旁边的空地上，影心不自己走动（没有 `moved_m`），法球出现在敌人身边
+- [ ] 群体治愈真言奶到半径内所有受伤的队友；灵体卫士用新的施放方式（在脚下按位置放）照常生效；HP 在 90% 以上的队友不算受伤
+- [ ] `cast` 时游戏让角色走过去（超出距离或视线），结果有 `moved_m`；召唤物被挪动时 `why_moved` 写召唤物的名字
 - [ ] 反应：agent 被攻击时不耗法术位的反应自动使用，人类屏幕没有询问框；`reactions` 能改；`regroup` 恢复原设置
 
 ## 已知问题

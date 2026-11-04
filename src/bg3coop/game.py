@@ -20,7 +20,7 @@ from importlib import resources
 from collections.abc import Iterator
 from typing import Any
 
-from .luadebug import BG3SE_PROTOCOL_VERSION, LuaDebugClient, LuaDebugError
+from .remote_lua import BG3SE_PROTOCOL_VERSION, RemoteLua, RemoteLuaError
 
 GAME_PORT = 9998
 CHAT_LINES = 100
@@ -117,7 +117,7 @@ class Game:
         self.ssh_host = os.environ.get("BG3COOP_SSH_HOST", "").strip() or None
         self.port = int(os.environ.get("BG3COOP_PORT", "19998" if self.ssh_host else str(GAME_PORT)))
         self.tunnel = Tunnel(self.ssh_host, self.port) if self.ssh_host else None
-        self.client: LuaDebugClient | None = None
+        self.client: RemoteLua | None = None
         self.lock = threading.Lock()
         self.agent_id: str | None = None  # survive save loads (the Lua state does not)
         self.human_id: str | None = None
@@ -134,12 +134,12 @@ class Game:
     def address(self) -> str:
         return f"127.0.0.1:{self.port}" + (f" (ssh {self.ssh_host})" if self.ssh_host else "")
 
-    def _connect(self) -> LuaDebugClient:
+    def _connect(self) -> RemoteLua:
         if self.client and self.client.connected:
             return self.client
         if self.tunnel:
             self.tunnel.ensure()
-        client = LuaDebugClient("127.0.0.1", self.port, protocol_version=BG3SE_PROTOCOL_VERSION)
+        client = RemoteLua("127.0.0.1", self.port, protocol_version=BG3SE_PROTOCOL_VERSION)
         try:
             client.connect()
         except OSError as e:
@@ -158,7 +158,7 @@ class Game:
             self.client = None
             client = self._connect()
             return client.evaluate(code, context=context, timeout=timeout, statement=True)
-        except LuaDebugError as e:
+        except RemoteLuaError as e:
             msg = str(e)
             if "NOT_READY" in msg or "NO_DEBUGGEE" in msg:
                 raise GameError("no save is loaded yet (the game is at the main menu or loading)") from e
@@ -207,7 +207,7 @@ class Game:
         with self.lock:
             try:
                 yield
-            except LuaDebugError as e:
+            except RemoteLuaError as e:
                 raise GameError(str(e)) from e
             except TimeoutError as e:
                 self.client = None

@@ -172,12 +172,12 @@ def test_talk_reports_dialogue(env):
     arron = next(c for c in s._look_rows()["characters"] if c["name"] == "Arron")
     r = s.talk(arron["id"])
     assert r["status"] == "done" and r["result"]["dialogue"], r
+    assert [e["kind"] for e in r["events"]] == ["dialogue_started"]  # with the result, not the next wait
     assert fake.world.selectedDialog  # the game picks the dialogue, as when the human clicks
     d = s.dialogue()
     assert d["yours"] is True and d["open"] is False  # mock has no UI
     assert s.status()["dialog"]["yours"] is True
-    kinds = [e["kind"] for e in s.wait(1)["events"]]
-    assert kinds == ["dialogue_started"]
+    assert s.wait(1)["events"] == []  # handed over once
 
 
 def test_dialogue_check_tags_are_translated(env):
@@ -258,7 +258,9 @@ def test_choose_tells_the_human_what_and_why(env):
         MOCK_C.dlg.ShowAnswers = true
         MOCK_C.dlg.Answers = { { BodyText = "Let us pass.", Enabled = true, AnswerTags = {} } }
     """)
-    assert s.choose(1, why="We came for my parents.") == {"chose": "Let us pass."}
+    r = s.choose(1, why="We came for my parents.")
+    assert r.pop("events") == [{"kind": "dialogue_started", "yours": True}]
+    assert r == {"chose": "Let us pass."}
     assert fake.client.eval("MOCK_C.answered") == "Let us pass."
     assert _lines(fake)[-1] == "Shadowheart: [chose] Let us pass. - We came for my parents."
 
@@ -389,8 +391,10 @@ def test_a_skill_check_in_your_dialogue(env):
 def test_a_failed_check_is_rerolled_only_when_asked(env):
     fake, s = env
     _check_on_screen(fake, s, [2, 15])
-    assert s.roll(reroll_if_failed=True) == {"first_natural": 2, "skill": "Investigation", "dc": 11,
-                                             "natural": 15, "total": 20, "success": True, "inspiration": 1}
+    r = s.roll(reroll_if_failed=True)
+    r.pop("events", None)
+    assert r == {"first_natural": 2, "skill": "Investigation", "dc": 11,
+                 "natural": 15, "total": 20, "success": True, "inspiration": 1}
     _check_on_screen(fake, s, [2, 15])
     assert s.roll()["success"] is False
 
@@ -485,10 +489,13 @@ def test_spells_list(env):
     s.set_agent("Shadowheart")
     rows = {r["spell"]: r for r in s._spell_rows()}
     assert set(rows) == {"Target_MainHandAttack", "Projectile_GuidingBolt", "Projectile_Fireball",
-                         "Zone_BurningHands", "Shout_SpiritGuardians", "Shout_TurnUndead"}  # Cure Wounds not prepared
+                         "Zone_BurningHands", "Shout_SpiritGuardians", "Shout_TurnUndead",
+                         "Shout_HealingWord_Mass", "Shout_RadianceOfTheDawn", "Target_FlamingSphere",
+                         "Teleportation_Revivify"}  # Cure Wounds not prepared
     assert rows["Target_MainHandAttack"]["range_m"] == 1.5
     assert rows["Projectile_GuidingBolt"]["cost"] == "action, slot1" and rows["Projectile_GuidingBolt"]["usable"]
-    assert s.spells(kind="heal") == []
+    assert s.spells(kind="heal")[0] == ("Shout_HealingWord_Mass Mass Healing Word "
+                                        "(healing; bonus action; no target: around you within 9 m)")
     # the kind shown on a row works as a filter too
     kind = rows["Projectile_GuidingBolt"]["kind"]
     lines = s.spells(kind=kind)
@@ -676,6 +683,73 @@ def test_wait_returns_when_the_human_writes(env):
     t = time.monotonic()
     r = s.wait(10)
     assert r["human_says"] == ["wait for me"] and time.monotonic() - t < 3
+
+
+def test_events_ride_along_with_any_tool(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    s.wait(0.5)  # the backlog
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")
+    r = s.look()  # busy exploring, not waiting
+    assert [e["kind"] for e in r["events"]] == ["combat_started"]
+    assert s.wait(0.5)["events"] == []  # not twice
+    assert "events" not in s.status()  # nothing new: no key
+
+
+def test_every_fight_starts_with_the_combat_basics(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    s.wait(0.5)  # the backlog
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")
+    r = s.look()  # whatever the tool
+    assert any("Opportunity attack" in line for line in r["combat_basics"])
+    assert "combat_basics" not in s.status()  # once per fight
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    assert "combat_basics" not in s.inventory()  # not again on the first turn
+    fake.server.execute("MOCK.combat = false; MOCK.fire('CombatEnded', 'combat-1')")
+    assert "combat_basics" not in s.wait(0.5)
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-2')")
+    assert "combat_basics" in s.wait(0.5)  # the next fight: again
+
+
+def test_combat_basics_come_with_the_first_turn_when_the_start_was_missed(env):
+    fake, s = env
+    _fight(fake, s)
+    s.status()  # the start of the fight, handed over
+    s._basics["given"] = False  # as if the bridge started mid-fight
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    r = s.inventory()
+    assert "your_turn" in r and r["combat_basics"]
+    assert "combat_basics" not in s.status()
+
+
+def test_a_long_action_gives_way_to_the_human(env, monkeypatch):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    real = s.game.call
+    monkeypatch.setattr(s.game, "call", lambda op, args=None, context="server":
+                        {"status": "running"} if op == "job" else real(op, args, context))
+    _type(fake, "stop, come back")
+    t = time.monotonic()
+    r = s._run_job({"job": 99}, 30)
+    assert r["status"] == "running" and "came up" in r["hint"] and time.monotonic() - t < 3
+    assert s.status()["human_says"] == ["stop, come back"]
+    # an urgent event cuts it short too, a minor one does not
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")
+    t = time.monotonic()
+    assert "came up" in s._run_job({"job": 99}, 30)["hint"] and time.monotonic() - t < 3
+    s.status()  # hands the event over
+    fake.server.execute("BG3COOP.push('noticed', {})")
+    assert "came up" not in s._run_job({"job": 99}, 1.5)["hint"]
+
+
+def test_events_lost_to_the_buffer_are_owned_up_to(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    s.wait(0.5)
+    fake.server.execute("for i = 1, 250 do BG3COOP.push('attacked', { n = i }) end")
+    ev = s.wait(0.5)["events"]
+    assert ev[0]["kind"] == "missed" and ev[0]["count"] == 50 and len(ev) == 201
 
 
 def test_errors_still_carry_messages(env):
@@ -1059,7 +1133,8 @@ def test_combat_overview(env):
     assert tav["human"] and tav["dist"] == 2
     assert c["my_turn"] is False and c["movement_m"] == 9 and c["actions"] == 1
     lines = s.combat()["order"]
-    assert lines[0].startswith(f">> {gob['id']} Goblin (enemy; 80% HP; init 15;") and "concentrating on Bless" in lines[0]
+    assert lines[0].startswith(f">> {gob['id']} Goblin (enemy; level 3; AC 15; 80% HP; init 15;")
+    assert "concentrating on Bless" in lines[0]
     assert lines[1].startswith(f"{me['id']} Shadowheart (you; HP 20/")
     assert lines[2].startswith(f"{tav['id']} Tav (the human; HP")
 
@@ -1091,7 +1166,7 @@ def test_combat_log_between_turns(env):
     assert events[1] == {"kind": "attacked", "by": "Goblin", "damage": 0}
     assert events[2] == {"kind": "downed", "name": "Tav", "human": True}
     assert events[3] == {"kind": "controlled", "status": "Asleep", "by": "Goblin"}
-    assert events[5]["since_last_turn"] == log and events[5]["movement_m"] == 9
+    assert events[5]["movement_m"] == 9
     assert s.combat()["since_your_last_turn"] == log
     fake.server.execute(f"MOCK.fire('TurnEnded', '{SH}')")
     assert "since_your_last_turn" not in s.combat()  # empty lists are dropped
@@ -1104,7 +1179,8 @@ def test_a_downed_party_member_did_not_die(env):
     fake.server.execute(f"MOCK.fire('Died', '{TAV}'); {run}")  # Osiris says so on 0 HP, downed or not
     assert s.wait(0.5)["events"] == []
     fake.server.execute(f"MOCK.dead['{TAV[-36:]}'] = true; MOCK.fire('Died', '{TAV}'); {run}")
-    assert s.wait(0.5)["events"] == [{"kind": "died", "name": "Tav"}]
+    assert s.wait(0.5)["events"] == [{"kind": "died", "name": "Tav", "human": True}]
+    assert s.wait(0.5)["events"] == []  # once
     fake.server.execute(f"MOCK.fire('Died', '{GOB}')")  # not in the party: at once
     assert s.wait(0.5)["events"] == [{"kind": "died", "name": "Goblin"}]
 
@@ -1124,8 +1200,12 @@ def test_examine_and_enemy_defenses(env):
     assert "cannot see" in s.examine("Hidden_66666666-6666-6666-6666-666666666666")["error"]
     assert "characters" in s.examine(s._look_rows()["items"][0]["id"])["error"]
     fake.server.execute("MOCK.combat = true")
+    c = s.combat()
+    assert any("resists Fire" in line and "cannot be Charmed, Asleep" in line for line in c["order"])
+    # the first listing in a fight brings the enemy's traits, later ones do not
+    assert c["enemy_traits"] == [f"{seen['Goblin']} Goblin: Darkvision: Can see in the dark up to 12.; "
+                                 "Nimble Escape: Disengage or hide as a bonus action."]
     gob = next(r for r in s._combat_rows()["order"] if r["name"] == "Goblin")
-    assert any("resists Fire" in line and "cannot be Charmed, Asleep" in line for line in s.combat()["order"])
     assert gob["resist"] == ["Fire"] and gob["immune_to"] == ["Charmed", "Asleep"] and "traits" not in gob
 
 
@@ -1435,6 +1515,7 @@ def test_noticing_something_hidden(env):
         f"MOCK.fire('RollResult', 'GLO_CONST_HiddenItemCheck', '{TAV}', '{guid}', 1, 0, 0);"  # not mine
         f"MOCK.fire('RollResult', 'GLO_CONST_HiddenItemCheck', '{SH}', '{guid}', 0, 0, 0);"  # failed
         f"MOCK.fire('RollResult', 'Persuasion', '{SH}', '{guid}', 1, 1, 0);"  # an active roll
+        f"MOCK.fire('RollResult', 'GAMEPLAY_SpellSavingThrowSave', '{SH}', '{guid}', 1, 0, 0);"  # a save vs her spell
         f"MOCK.fire('RollResult', 'GLO_CONST_HiddenItemCheck', '{SH}', '{guid}', 1, 0, 0)"
     )
     events = [e for e in s.wait(1)["events"] if e["kind"] == "noticed"]
@@ -1839,3 +1920,294 @@ def test_look_with_many_rows_lists_the_rest_once():
     assert first["farther"] and any("Candle x8" in line for line in first["items"])
     again = mem.show(r, "Shadowheart", 40)
     assert "farther" not in again and "gone" not in again
+
+
+# ---------------------------------------------------------------- combat as tested on Orin (2026-11-04)
+
+DEVA = "99999999-9999-9999-9999-999999999999"
+
+
+def _fight(fake, s):
+    s.set_agent("Shadowheart")
+    s.wait(0.5)  # the backlog
+    fake.server.execute(f"MOCK.combat = true; MOCK.init = {{ ['{SH}'] = 12, ['{TAV}'] = 8, ['{GOB}'] = 15 }};"
+                        f"MOCK.fighters = {{ ['{SH}'] = true, ['{TAV}'] = true, ['{GOB}'] = true, ['{DEVA}'] = true }};"
+                        f"MOCK.fire('CombatStarted', 'combat-1')")
+
+
+def test_the_fight_says_where_everyone_is_and_how_far_to_walk(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    rows = {r["name"]: r for r in s._combat_rows()["order"]}
+    gob = rows["Goblin"]
+    assert len(gob["pos"]) == 3 and gob["walk_m"] > 0 and "walk_m" not in rows["Shadowheart"]
+    line = next(x for x in s.combat()["order"] if "Goblin" in x)
+    x, y, z = gob["pos"]
+    assert f"x={x} y={y} z={z}" in line
+    assert f"walk {gob['walk_m']} m (" in line and "your movement" in line
+    x = s.examine(next(r for r in s._combat_rows()["order"] if r["name"] == "Goblin")["id"])
+    assert x["pos"] == gob["pos"] and x["walk_m"] == gob["walk_m"]
+    fake.server.execute("MOCK.noPath = true")
+    assert "no way there on foot" in next(x for x in s.combat()["order"] if "Goblin" in x)
+
+
+def test_the_first_result_of_a_turn_brings_the_fight(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{GOB}'")
+    assert "your_turn" not in s.status()  # not yours
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    r = s.inventory()  # whatever the agent calls first
+    assert r["your_turn"]["my_turn"] and any("Goblin" in line for line in r["your_turn"]["order"])
+    assert r["your_turn"]["enemy_traits"]  # the enemies' traits, the first time
+    assert "your_turn" not in s.status()  # once per turn
+    assert "enemy_traits" not in s.combat()
+    fake.server.execute(f"MOCK.fire('TurnEnded', '{SH}'); MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    c = s.combat()  # the next turn: combat itself is the picture
+    assert c["my_turn"] and "your_turn" not in c
+    assert "your_turn" not in s.status()
+
+
+def test_what_changed_between_turns_and_the_dead_human(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}'); MOCK.fire('TurnEnded', '{SH}')")
+    s.wait(0.5)
+    # on others' turns: the goblin is hurt and burns, Shadowheart is slowed, Tav drops, then dies
+    # without a Died event (the death saves failed) and falls out of the fight's lists
+    fake.server.execute(
+        f"MOCK.hp = {{ ['{GOB}'] = {{ Hp = 5, MaxHp = 25 }} }}; MOCK.st = {{ ['{GOB}'] = {{ 'BURNING' }} }};"
+        f"MOCK.statuses[#MOCK.statuses + 1] = 'SLEEPING';"
+        f"MOCK.active['{TAV}'] = {{ DOWNED = true }}; MOCK.fire('StatusApplied', '{TAV}', 'DOWNED', '{GOB}', 1)")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["downed"]
+    fake.server.execute(f"MOCK.active['{TAV}'] = nil; MOCK.dead['{TAV}'] = true;"
+                        f"MOCK.fighters = {{ ['{SH}'] = true, ['{GOB}'] = true }}")
+    assert s.wait(0.5)["events"] == [{"kind": "died", "name": "Tav", "human": True}]
+    assert s.status()["human"]["dead"]
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    c = s.combat()
+    tav = next(line for line in c["order"] if " Tav " in line)
+    assert "the human" in tav and "DEAD" in tav  # still listed, though out of the fight
+    assert {"died": "Tav"} in c["since_your_last_turn"]
+    assert c["changes_since_your_last_turn"] == [
+        "Goblin: HP 80% -> 20%; now Burning",
+        "Tav: DEAD",
+        "you: now Asleep",
+    ]
+
+
+def test_spells_on_the_dead_are_the_games_call(env):
+    fake, s = env
+    _fight(fake, s)
+    tav = s._look_rows()["characters"][0]["id"]
+    fake.server.execute(f"MOCK.dead['{TAV}'] = true; MOCK.turn = '{SH}'")
+    revive = next(i["id"] for i in s._inventory_rows("scroll")["items"] if "Revivify" in i["name"])
+    assert "error" not in s.use_item(revive, target=tav)  # a revival is fine
+
+
+def test_a_spell_on_the_dead_is_not_refused_up_front(env):
+    fake, s = env
+    _fight(fake, s)
+    tav = s._look_rows()["characters"][0]["id"]
+    fake.server.execute(f"MOCK.dead['{TAV}'] = true; MOCK.turn = '{SH}'")
+    assert s.cast("Projectile_GuidingBolt", target=tav)["status"] == "done"  # the game decides
+
+
+def test_a_revive_spell_brings_back_the_dead(env):
+    fake, s = env
+    _fight(fake, s)
+    tav = s._look_rows()["characters"][0]["id"]
+    fake.server.execute(f"MOCK.dead['{TAV}'] = true; MOCK.turn = '{SH}'")
+    r = s.cast("Teleportation_Revivify", target=tav)
+    assert r["status"] == "done" and r["result"]["revived"] == "Tav", r
+    assert not fake.server.eval(f"MOCK.dead['{TAV}']")
+    assert "not dead or downed" in s.cast("Teleportation_Revivify", target=tav)["error"]
+
+
+def test_shouts_take_effect_around_you(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'")
+    gob = next(c["id"] for c in s._look_rows()["characters"] if c["name"] == "Goblin")
+    r = s.cast("Shout_HealingWord_Mass", target=gob)
+    assert r["status"] == "done" and "target you gave was not used" in r["result"]["note"]
+    assert "Tav (party)" in r["result"]["around_you"] and fake.server.eval("MOCK.casts[#MOCK.casts]") == "Shout_HealingWord_Mass@pos"
+    # Tav far off and Shadowheart unhurt: nobody it could heal
+    fake.server.execute(f"MOCK.pos['{TAV}'] = {{ 30, 0, 0 }}; MOCK.hp = {{ ['{SH}'] = {{ Hp = 25, MaxHp = 25 }} }};"
+                        f"MOCK.res = {{}}")
+    err = s.cast("Shout_HealingWord_Mass")["error"]
+    assert "no hurt party member is within 9 m" in err and "Tav 28.0 m away" in err
+    assert s.cast("Shout_RadianceOfTheDawn")["status"] == "done"  # burns enemies: no heal check
+
+
+def test_summons_act_on_their_turn(env):
+    fake, s = env
+    fake.server.execute(f"MOCK.chars[#MOCK.chars + 1] = '{DEVA}'; MOCK.pos['{DEVA}'] = {{ 4, 0, 0 }};"
+                        f"MOCK.names['{DEVA}'] = 'Deva'; MOCK.summoner = {{ ['{DEVA}'] = '{SH}' }}")
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turns = {{ ['{SH}'] = true, ['{DEVA}'] = true }}; MOCK.fire('TurnStarted', '{DEVA}')")
+    ev = [e for e in s.wait(0.5)["events"] if e["kind"] == "summon_turn"]
+    assert ev[0]["name"] == "Deva"
+    assert s.status()["summon_turn"] == ["Deva"]
+    c = s.combat()
+    assert any("Deva (your summon; HP 20/25" in line for line in c["order"])
+    assert c["your_summons"] == [f"{ev[0]['id']} Deva (ITS TURN NOW: 9 m movement, 1 action(s), 1 bonus action(s))"]
+    gob = next(x["id"] for x in s._look_rows()["characters"] if x["name"] == "Goblin")
+    assert s.cast("Target_MainHandAttack", target=gob, summon="deva")["status"] == "done"
+    assert fake.server.eval("MOCK.casts[#MOCK.casts]") == f"Target_MainHandAttack@{GOB}"
+    assert fake.server.eval(f"MOCK.res['{DEVA}']['ap-guid'][1].Amount") == 0  # the summon paid
+    assert fake.server.eval(f"MOCK.res['{SH}']['ap-guid'][1].Amount") == 1
+    # the log names the summon, not its summoner
+    fake.server.execute(f"MOCK.fire('AttackedBy', '{GOB}', '{SH}', '{DEVA}', 'Radiant', 6, '', 1)")
+    assert {"by": "Deva (your summon)", "hit": "Goblin", "damage": 6} in s.combat()["since_your_last_turn"]
+    # the game walks the summon first: the result says it moved, not "you"
+    fake.server.execute(f"MOCK.walkOnCast = 3; MOCK.res['{DEVA}']['ap-guid'][1].Amount = 1")
+    r = s.cast("Target_MainHandAttack", target=gob, summon="deva")["result"]
+    fake.server.execute("MOCK.walkOnCast = nil")
+    assert r["moved_m"] == 3 and r["why_moved"] == "the game walked Deva into range or sight first"
+    assert s.end_turn(summon="Deva")["ended"]
+    assert s.status()["my_turn"]  # Shadowheart's own turn goes on
+    assert "no summon" in s.cast("Target_MainHandAttack", target=gob, summon="Imp")["error"]
+
+
+def test_summons_found_in_the_summon_container_too(env):
+    fake, s = env
+    fake.server.execute(f"MOCK.chars[#MOCK.chars + 1] = '{DEVA}'; MOCK.pos['{DEVA}'] = {{ 4, 0, 0 }};"
+                        f"MOCK.names['{DEVA}'] = 'Deva'; MOCK.summons = {{ ['{SH}'] = {{ '{DEVA}' }} }}")
+    _fight(fake, s)
+    assert any("Deva (your summon" in line for line in s.combat()["order"])
+
+
+def test_a_shout_is_logged_when_it_goes_off(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'")
+    assert s.cast("Shout_HealingWord_Mass")["status"] == "done"
+    # cast at the caster's feet: no UsingSpellOnTarget, the log has it from CastedSpell
+    assert {"by": "you", "cast": "Mass Healing Word", "on": ["you", "Tav"]} in s.combat()["since_your_last_turn"]
+    # a per-target event that does come joins the line instead of making another
+    fake.server.execute(f"MOCK.fire('UsingSpellOnTarget', '{SH}', '{TAV}', 'Shout_HealingWord_Mass', '', '', 1)")
+    rows = [r for r in s.combat()["since_your_last_turn"] if r.get("cast") == "Mass Healing Word"]
+    assert rows == [{"by": "you", "cast": "Mass Healing Word", "on": ["you", "Tav"]}]
+
+
+def test_a_summon_goes_on_the_ground_by_the_target(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'")
+    gob = next(c["id"] for c in s._look_rows()["characters"] if c["name"] == "Goblin")
+    r = s.cast("Target_FlamingSphere", target=gob)
+    assert r["status"] == "done" and "next to Goblin" in r["result"]["note"], r
+    assert fake.server.eval("MOCK.casts[#MOCK.casts]") == "Target_FlamingSphere@pos"
+    # the goblin stands at x 12, Shadowheart at x 2: the spot is 1.5 m short of the goblin
+    assert fake.server.eval("MOCK.castAt[1]") == 10.5 and r["result"]["at"] == [10.5, 0, 0]
+    assert {"by": "you", "cast": "Flaming Sphere"} in s.combat()["since_your_last_turn"]
+
+
+def test_one_blow_is_one_line(env):
+    fake, s = env
+    _fight(fake, s)
+    # a slash and its fire raise AttackedBy twice; a miss then a hit on another target stays apart
+    fake.server.execute(
+        f"MOCK.fire('AttackedBy', '{GOB}', '{TAV}', '{TAV}', 'Slashing', 9, '', 1);"
+        f"MOCK.fire('AttackedBy', '{GOB}', '{TAV}', '{TAV}', 'Fire', 1, '', 1);"
+        f"MOCK.fire('AttackedBy', '{SH}', '{GOB}', '{GOB}', 'Piercing', 0, '', 1);"
+        f"MOCK.fire('AttackedBy', '{SH}', '{GOB}', '{GOB}', 'Poison', 2, '', 1)")
+    assert s.combat()["since_your_last_turn"] == [
+        {"by": "Tav", "hit": "Goblin", "damage": 10},
+        {"by": "Goblin", "hit": "you", "damage": 2},
+    ]
+
+
+def test_enemy_statuses_say_what_they_do_once(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.st = {{ ['{GOB}'] = {{ 'BURNING', 'DIFFICULTY', 'DIFFICULTY' }} }}")
+    c = s.combat()
+    gob = next(line for line in c["order"] if "Goblin" in line)
+    assert "Burning" in gob and "Hardcore" not in gob  # kept off the portraits
+    assert c["status_effects"] == ["Burning: Takes 1d4 Fire at the start of each turn."]
+    assert "status_effects" not in s.combat()  # once a fight
+    fake.server.execute("MOCK.combat = false; MOCK.fire('CombatEnded', 'combat-1');"
+                        "MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-2')")
+    assert s.combat()["status_effects"]  # a new fight tells again
+
+
+def test_changes_leave_out_statuses_that_come_and_go(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}'); MOCK.fire('TurnEnded', '{SH}')")
+    fake.server.execute(f"MOCK.st = {{ ['{TAV}'] = {{ 'GWM_BONUS_ATTACK', 'MARTIAL_ARTS', 'BURNING' }} }}")
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    assert s.combat()["changes_since_your_last_turn"] == ["Tav: now Burning"]
+
+
+def test_enemies_of_a_kind_share_one_traits_line():
+    from bg3coop import views
+    t = [{"name": "Darkvision", "what": "Sees in the dark."}]
+    order = [{"id": "e3", "name": "Reaper", "traits": t}, {"id": "e4", "name": "Reaper", "traits": t},
+             {"id": "e5", "name": "Orin", "traits": [{"name": "Unstoppable"}]}, {"id": "e6", "name": "Imp", "traits": t}]
+    assert views.traits_lines(order[:2]) == ["Reaper x2 (e3, e4): Darkvision: Sees in the dark."]
+    assert views.traits_lines(order) == ["e3 Reaper, e4 Reaper, e6 Imp: Darkvision: Sees in the dark.",
+                                         "e5 Orin: Unstoppable"]
+
+
+def test_drawn_into_a_fight_late_still_hears_of_it(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    s.wait(0.5)  # the backlog
+    # the fight starts without her (she stood too far off), and draws her in a moment later
+    fake.server.execute(f"MOCK.combat = true; MOCK.fighters = {{ ['{TAV}'] = true, ['{GOB}'] = true }};"
+                        f"MOCK.fire('CombatStarted', 'combat-1')")
+    assert s.wait(0.5)["events"] == []
+    fake.server.execute(f"MOCK.fighters = {{ ['{SH}'] = true, ['{TAV}'] = true, ['{GOB}'] = true }}")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_started"]
+    assert s.wait(0.5)["events"] == []  # once
+    fake.server.execute("MOCK.fire('CombatStarted', 'combat-1')")  # the same fight: no second one
+    assert s.wait(0.5)["events"] == []
+    fake.server.execute("MOCK.combat = false; MOCK.fire('CombatEnded', 'combat-1')")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_ended"]
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")  # the next fight
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_started"]
+
+
+def test_the_end_of_its_fight_always_wakes_wait(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    s.wait(0.5)  # the backlog
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_started"]
+    # CombatEnded comes while IsInCombat is still set: the poll after it tells
+    fake.server.execute("MOCK.fire('CombatEnded', 'combat-other')")
+    assert s.wait(0.5)["events"] == []  # another fight: hers goes on
+    fake.server.execute("MOCK.fire('CombatEnded', 'combat-1'); MOCK.combat = false")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_ended"]
+    assert s.wait(0.5)["events"] == []  # once
+    # she leaves a fight that goes on without her, with no CombatEnded at all
+    fake.server.execute("MOCK.combat = true; MOCK.fire('CombatStarted', 'combat-1')")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_started"]
+    fake.server.execute(f"MOCK.fighters = {{ ['{TAV}'] = true, ['{GOB}'] = true }}")
+    assert [e["kind"] for e in s.wait(0.5)["events"]] == ["combat_ended"]
+    assert s.wait(0.5)["events"] == []
+
+
+def test_an_enemy_that_hides_is_still_in_the_fight(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}'); MOCK.fire('TurnEnded', '{SH}')")
+    fake.server.execute(f"MOCK.invisible = {{ ['{GOB}'] = true }}")
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    c = s.combat()
+    assert not any("Goblin" in line for line in c["order"])  # what one cannot see is not listed
+    assert "Goblin: hidden (still in the fight)" in c["changes_since_your_last_turn"]
+
+
+def test_a_healing_shout_lists_only_the_party_around(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.pos['{GOB}'] = {{ 5, 0, 0 }}")
+    around = s.cast("Shout_HealingWord_Mass")["result"]["around_you"]
+    assert around == ["Tav (party)"]
+    fake.server.execute("MOCK.res = {}")
+    assert "Goblin (enemy)" in s.cast("Shout_RadianceOfTheDawn")["result"]["around_you"]  # it burns them

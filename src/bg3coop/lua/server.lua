@@ -10,7 +10,7 @@
 
 BG3COOP = BG3COOP or {}
 local C = BG3COOP
-C.VERSION = 68
+C.VERSION = 83
 
 local function now() return Ext.Utils.MonotonicTime() end
 
@@ -138,9 +138,10 @@ local function isParty(uuid)
     return false
 end
 
+-- Who acts: the agent's character, or for one call (args.as) one of its summons.
 local function agent()
     if not C.agent then error("no agent character chosen yet: call set_agent first") end
-    return C.agent
+    return C.actor or C.agent
 end
 
 -- The human's own character. Fixed at set_agent time: the character the human
@@ -166,6 +167,9 @@ local function hp(uuid)
     end
     return osi(Osi.GetHitpoints, uuid), osi(Osi.GetMaxHitpoints, uuid)
 end
+
+local function isDead(uuid) return truthy(osi(Osi.IsDead, uuid)) end
+local function isDowned(uuid) return truthy(osi(Osi.HasActiveStatus, uuid, "DOWNED")) end
 
 local function inCombat(uuid) return truthy(osi(Osi.IsInCombat, uuid)) end
 -- The human's turn-based toggle outside combat: movement comes per turn, as in a fight, and
@@ -231,11 +235,13 @@ local function turnState(uuid)
         if ok then active = v end
     end
     if active == nil then active = same(C.turn.current, uuid) end
+    -- who ended their turn (the agent and each of its summons on their own)
+    if type(C.turn.ended) ~= "table" then C.turn.ended = {} end
     if active ~= true then
-        C.turn.ended = nil
+        C.turn.ended[bare(uuid)] = nil
         return false, false
     end
-    if same(C.turn.ended, uuid) then return false, true end
+    if C.turn.ended[bare(uuid)] then return false, true end
     return true, false
 end
 local function myTurn(uuid) return (turnState(uuid)) end
@@ -286,13 +292,41 @@ local function statusIds(uuid)
     return out
 end
 
--- Display names of status ids, skipping technical ones that have none.
-local function statusNames(ids, max)
-    local out = {}
+-- Whether a status stat carries one of the StatusPropertyFlags.
+function C.statusFlag(st, flag)
+    local ok, f = pcall(function() return st.StatusPropertyFlags end)
+    if not ok or f == nil then return false end
+    if type(f) == "table" then
+        for _, x in ipairs(f) do if x == flag then return true end end
+        return false
+    end
+    return tostring(f):find(flag, 1, true) ~= nil
+end
+
+-- Statuses that come and go as turns pass and say nothing about the fight: ones kept out of the
+-- combat log (巨武器大师：附赠攻击) and ones that only unlock an action for a turn (武艺：徒手打击).
+function C.fleeting(st)
+    if C.statusFlag(st, "DisableCombatlog") then return true end
+    local ok, b = pcall(function() return st.Boosts end)
+    b = ok and tostring(b or "") or ""
+    return b ~= "" and b:gsub("UnlockSpell%b()", ""):gsub("[;%s]", "") == ""
+end
+
+-- Display names of status ids, skipping technical ones: those without a name and those the game
+-- keeps off the portraits (难度：硬核, 移位 from a tadpole power). `fleeting` ones too when asked.
+-- Each name once: the same status from two sources (难度：硬核 twice on Orin) took two of the
+-- few places and pushed 不可撼动 off the list.
+local function statusNames(ids, max, noFleeting, with)
+    local out, seen = {}, {}
     for _, name in ipairs(ids) do
         local ok, st = pcall(Ext.Stats.Get, name)
         local dn = ok and st and loca(st.DisplayName)
-        if dn and #out < (max or 12) and not dn:find("^%%%%%%") then out[#out + 1] = dn end
+        if dn and not seen[dn] and #out < (max or 12) and not dn:find("^%%%%%%")
+            and not C.statusFlag(st, "DisablePortraitIndicator") and not (noFleeting and C.fleeting(st)) then
+            seen[dn] = true
+            out[#out + 1] = dn
+            if with then with(dn, st) end
+        end
     end
     return out
 end
@@ -564,6 +598,38 @@ local function entityUuid(e)
     local ok, u = pcall(function() return e.Uuid.EntityUuid end)
     if ok then return u end
     return nil
+end
+
+-- The agent's living summons. SummonContainer is not reliable (a Flaming Sphere was listed under
+-- Items, Characters empty), and IsSummon.Owner names the summon itself; Osi.CharacterGetOwner
+-- gives the summoner (tested 2026-11-04). Both are looked at.
+function C.mySummons()
+    local out, seen = {}, {}
+    if not C.agent then return out end
+    local function add(u)
+        if u and not seen[bare(u)] and not isDead(u) and comp(entity(u), "ServerCharacter") then
+            seen[bare(u)] = true
+            out[#out + 1] = u
+        end
+    end
+    pcall(function()
+        local sc = entity(C.agent).SummonContainer
+        for _, list in ipairs({ sc.Characters, sc.Items }) do
+            for _, x in pairs(list) do add(entityUuid(x)) end
+        end
+    end)
+    pcall(function()
+        for _, x in ipairs(Ext.Entity.GetAllEntitiesWithComponent("IsSummon")) do
+            local u = entityUuid(x)
+            if u and same(osi(Osi.CharacterGetOwner, u), C.agent) then add(u) end
+        end
+    end)
+    return out
+end
+
+function C.isMySummon(u)
+    for _, s in ipairs(C.mySummons()) do if same(s, u) then return true end end
+    return false
 end
 
 function C.ops.look(args)
@@ -851,7 +917,8 @@ function C.ops.status()
     if h then
         local hp_ = C.pos(h)
         s.human = { name = C.name(h), dist = hp_ and s.pos and r1(dist(s.pos, hp_)),
-            dir = hp_ and s.pos and dir(s.pos, hp_), combat = inCombat(h) or nil, dialog = inDialog(h) or nil }
+            dir = hp_ and s.pos and dir(s.pos, hp_), combat = inCombat(h) or nil, dialog = inDialog(h) or nil,
+            downed = isDowned(h) or nil, dead = isDead(h) or nil }
     end
     if same(osi(Osi.GetHostCharacter), me) then
         s.note = "the human has selected your character and may be controlling it right now"
@@ -862,6 +929,12 @@ function C.ops.status()
         local mine, ended = turnState(me)
         s.my_turn = mine
         if ended then s.turn_ended = true; s.waiting_for_party = true end
+        -- a summon's turn: the agent commands it (summon=... on spells, move, cast, end_turn)
+        local now_ = {}
+        for _, u in ipairs(C.mySummons()) do
+            if (turnState(u)) then now_[#now_ + 1] = C.name(u) end
+        end
+        if #now_ > 0 then s.summon_turn = now_ end
     elseif turnBasedMode(me) then
         s.turn_based = true
     end
@@ -978,6 +1051,7 @@ function C.ops.set_agent(args)
     if not h then error("cannot tell which character is the human's: pass human") end
     if same(p, h) then error("that is the human's own character") end
     C.agent, C.human = p, h
+    C.fallenInit = nil -- who is dead already is not news
     if args.detach ~= false then osi(Osi.DetachFromPartyGroup, p) end
     takeOverReactions(p)
     local n = C.name(p)
@@ -1011,7 +1085,8 @@ local function newJob(kind, data)
         end
     end
     C.nextJob = C.nextJob + 1
-    local j = { id = C.nextJob, kind = kind, status = "running", started = now(), data = data or {} }
+    local j = { id = C.nextJob, kind = kind, status = "running", started = now(), data = data or {},
+        me = C.actor or C.agent }
     C.jobs[j.id] = j
     return j
 end
@@ -1021,6 +1096,17 @@ local function finish(j, status, result, err)
     if j.data.unchained then
         result = result or {}
         result.unchained = "you left the human's group to walk on your own: regroup to follow them again"
+    end
+    if j.kind == "cast" and type(result) == "table" then
+        -- where the caster stands says little; that the game walked it into range says a lot
+        local from, at = j.data.from, result.pos
+        local moved = from and at and dist(from, at)
+        if moved and moved > 0.5 then
+            result.moved_m = r1(moved)
+            local by = (j.me and not same(j.me, C.agent)) and C.name(j.me) or "you"
+            result.why_moved = "the game walked " .. by .. " into range or sight first"
+        end
+        result.pos = nil
     end
     j.status, j.result, j.error = status, result, err
     j.ended = now()
@@ -1081,7 +1167,7 @@ local replan -- route planning, below
 -- Checked on every poll (no tick handler needed).
 local function stepJob(j)
     if j.status ~= "running" then return end
-    local me = C.agent
+    local me = j.me or C.agent
     local elapsed = now() - j.started
     local d = j.data
     local p = C.pos(me)
@@ -1190,7 +1276,7 @@ end
 function C.ops.cancel(args)
     local j = C.jobs[tonumber(args.id)]
     if j then
-        osi(Osi.PurgeOsirisQueue, C.agent)
+        osi(Osi.PurgeOsirisQueue, j.me or C.agent)
         finish(j, "cancelled")
     end
     return true
@@ -1917,7 +2003,8 @@ function C.ops.inventory(args)
         gold = osi(Osi.PartyGetGold, me) }
 end
 
--- Revive scrolls (Revivify, Resurrection) pick the fallen as their first target.
+-- Revivals (scrolls, Revivify, the Deva's) ask for Dead() in OriginTargetConditions: they take
+-- the fallen as their second target. Other spells on the dead are the game's to allow or refuse.
 local function raisesDead(spell)
     local ok, cond = pcall(function() return Ext.Stats.Get(spell).OriginTargetConditions end)
     return ok and tostring(cond or ""):find("Dead()", 1, true) ~= nil
@@ -2866,6 +2953,9 @@ function C.ops.spells(args)
                 kind = tostring(st.VerbalIntent):lower(), cost = costText(costs), range_m = rangeOf(st),
                 usable = why == nil, why_not = why, upcast = #up > 0 and up or nil, variants = row.variants,
             }
+            -- a shout has no target: it takes effect around the caster
+            local area = tostring(st.SpellType) == "Shout" and tonumber(st.AreaRadius)
+            if area and area > 0 then out[#out].range_m, out[#out].around_you_m = "self", area end
         end
     end
     return out
@@ -2993,8 +3083,34 @@ function C.ops.cast(args)
         end
     end
     local st = Ext.Stats.Get(castId)
-    return startCast(me, castId, parseCosts(st and st.UseCosts), args)
+    local opt = {}
+    if st and tostring(st.SpellType) == "Shout" then opt = shoutCheck(me, st, args) end
+    if st and args.id and raisesDead(castId) then
+        -- Revivify and the Deva's: as with a revive scroll, the fallen one is the second target
+        local who = args.id
+        local name = C.name(who)
+        opt.second = who
+        opt.landing = args.pos and { tonumber(args.pos[1]), tonumber(args.pos[2]), tonumber(args.pos[3]) } or nil
+        local why = reviveProblem(me, who, opt.landing)
+        if why then error(why) end
+        opt.failed = "the game would not bring them back"
+        opt.report = function() return { revived = name, hp = (hp(who)) } end
+        return startCast(me, castId, parseCosts(st.UseCosts), { id = who }, opt)
+    end
+    if st and args.id and C.groundOnly(st) then
+        -- a summon (Flaming Sphere, Planar Ally) goes on the ground: aimed at a character, the
+        -- game walked the caster off somewhere first (4.2 m, 2026-11-04)
+        if not perceives(me, C.pos(me), args.id, C.pos(args.id)) then error("you cannot see that target") end
+        local spot = C.spotBy(me, args.id, tonumber(st.TargetRadius))
+        if not spot then error("this spell goes on the ground, and there is no free ground next to " .. C.name(args.id)
+            .. " within its range: give x/y/z instead") end
+        local note = "this spell goes on the ground: cast at the free spot next to " .. C.name(args.id)
+        args.id, args.pos = nil, spot
+        opt.report = function() return { note = note, at = { r1(spot[1]), r1(spot[2]), r1(spot[3]) } } end
+    end
+    return startCast(me, castId, parseCosts(st and st.UseCosts), args, opt)
 end
+
 
 -- Osi.UseSpell queues a request that skips attack rolls, saving throws and the
 -- cast checks (range, sight, silence). A tick or two later it waits in
@@ -3137,6 +3253,116 @@ local function alliesInArea(me, castId, args)
 end
 C.alliesInArea = alliesInArea
 
+-- Whether a spell restores hit points. VerbalIntent says little: Radiance of the Dawn, which
+-- burns enemies, is "Healing" too. The spell's functors say it (RegainHitPoints).
+function C.heals(st)
+    local found = false
+    for _, k in ipairs({ "SpellProperties", "SpellSuccess" }) do
+        pcall(function()
+            for _, g in ipairs(stat(st, k) or {}) do
+                for _, f in ipairs(g.Functors or {}) do
+                    if tostring(f.TypeId) == "RegainHitPoints" then found = true end
+                end
+            end
+        end)
+    end
+    return found
+end
+
+-- Shouts (Mass Healing Word, Spirit Guardians...) take effect around the caster within
+-- AreaRadius and have no target: the game does not walk anywhere for them. A target the
+-- agent passes is dropped and the result says so; a healing shout that would reach no one
+-- who needs it is refused, naming how far off the party is.
+function shoutCheck(me, st, args)
+    local r = tonumber(stat(st, "AreaRadius")) or 0
+    local note
+    if args.id or args.pos then
+        note = "this spell has no target (it takes effect around you" .. (r > 0 and (" within " .. r .. " m") or "")
+            .. "), so the target you gave was not used"
+        args.id, args.pos = nil, nil
+    end
+    if r <= 0 then return { shout = true, report = function() return { note = note } end } end
+    local mypos = C.pos(me)
+    local function around()
+        local inside, outside = {}, {}
+        local ok, list = pcall(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter")
+        for _, e in ipairs(ok and list or {}) do
+            local u, p = entityUuid(e), entityPos(e)
+            local d = u and p and mypos and dist(mypos, p)
+            if d and not same(u, me) and not isDead(u) and not hidden(u) and d <= SIGHT then
+                local rel = relation(me, u)
+                if d <= r + AREA_MARGIN then inside[#inside + 1] = { u = u, text = C.name(u) .. " (" .. rel .. ")" }
+                elseif rel == "party" then outside[#outside + 1] = C.name(u) .. " " .. r1(d) .. " m away" end
+            end
+        end
+        return inside, outside
+    end
+    local inside, outside = around()
+    if C.heals(st) then
+        -- a scratch (85/86) is not worth a healing slot
+        local function hurt(u) local h, m = hp(u); return isDowned(u) or (h and m and h < 0.9 * m) end
+        local reach = hurt(me)
+        for _, x in ipairs(inside) do if isParty(x.u) and hurt(x.u) then reach = true end end
+        if not reach then
+            error("no hurt party member is within " .. r .. " m of you, where this spell heals"
+                .. (#outside > 0 and (" (" .. table.concat(outside, ", ") .. ")") or "")
+                .. ": move closer first, then cast it")
+        end
+    end
+    local around = {}
+    for _, x in ipairs(inside) do
+        if not C.heals(st) or isParty(x.u) then around[#around + 1] = x.u end
+    end
+    return { shout = true, around = around, report = function()
+        local names = {}
+        -- a healing shout heals the party: enemies around do not belong on the list
+        local heals = C.heals(st)
+        for _, x in ipairs(inside) do
+            if not heals or isParty(x.u) then names[#names + 1] = x.text end
+        end
+        return { note = note, around_you = names, radius_m = r }
+    end }
+end
+
+-- Spells that cannot be cast at a character, only at the ground (summons: CannotTargetCharacter,
+-- with "not Character()" in their conditions).
+function C.groundOnly(st)
+    local f = stat(st, "SpellFlags")
+    if type(f) == "table" then
+        for _, x in ipairs(f) do if x == "CannotTargetCharacter" then return true end end
+        return false
+    end
+    return tostring(f or ""):find("CannotTargetCharacter", 1, true) ~= nil
+end
+
+-- Free ground next to a character, on the caster's side of it and within `range` of the caster.
+function C.spotBy(me, u, range)
+    local mp, tp = C.pos(me), C.pos(u)
+    if not (mp and tp) then return nil end
+    local dx, dz = mp[1] - tp[1], mp[3] - tp[3]
+    local l = math.sqrt(dx * dx + dz * dz)
+    if l < 0.01 then dx, dz, l = 1, 0, 1 end
+    dx, dz = dx / l, dz / l
+    local bodies = {}
+    local ok, list = pcall(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter")
+    for _, e in ipairs(ok and list or {}) do
+        local p = entityPos(e)
+        if p and dist(p, tp) < 4 then bodies[#bodies + 1] = p end
+    end
+    for _, a in ipairs({ 0, 30, -30, 60, -60, 90, -90 }) do
+        local c, s_ = math.cos(math.rad(a)), math.sin(math.rad(a))
+        local x, z = tp[1] + 1.5 * (dx * c - dz * s_), tp[3] + 1.5 * (dx * s_ + dz * c)
+        local y = groundAt(x, z, tp[2])
+        local spot = y and { x, y, z }
+        local free = spot ~= nil and (not range or dist(mp, spot) <= range)
+        for _, p in ipairs(bodies) do
+            if free and dist(p, spot) < 0.9 then free = false end
+        end
+        if free then return spot end
+    end
+    return nil
+end
+
 -- Thrown grenades: their effect is not in any stats or template field the
 -- script can read, only the surface some templates leave (CreateSurface radius).
 local GRENADE_RADIUS = 4.0 -- metres when the template says nothing: the largest common grenade
@@ -3187,10 +3413,10 @@ function startCast(me, castId, costs, args, opt)
                 " (in the area): aim elsewhere, or cast again with even_if_allies if you mean it")
         end
     end
-    local j = newJob("cast", { started_in_combat = true, cast = true }) -- a cast may start the fight itself
+    local j = newJob("cast", { started_in_combat = true, cast = true, from = p }) -- a cast may start the fight itself
     if C.listening.CastedSpell then
-        local pend = { job = j.id, spell = castId, costs = costs, combat = combat, after = opt.after, report = opt.report,
-            failed = opt.failed }
+        local pend = { job = j.id, caster = me, spell = castId, costs = costs, combat = combat, after = opt.after,
+            report = opt.report, failed = opt.failed, spot = not args.id, around = opt.around }
         C.pending = pend
         playByTheRules(me, castId, opt, function() pend.after = nil end)
     else
@@ -3208,6 +3434,10 @@ function startCast(me, castId, costs, args, opt)
         end
     elseif args.pos then
         Osi.UseSpellAtPosition(me, castId, tonumber(args.pos[1]), tonumber(args.pos[2]), tonumber(args.pos[3]))
+    elseif opt.shout and p then
+        -- UseSpell(me, shout, me) took effect on the caster alone (Mass Healing Word healed only
+        -- Shadowheart, 2026-11-04); at the caster's feet the area is what counts
+        Osi.UseSpellAtPosition(me, castId, p[1], p[2], p[3])
     else
         Osi.UseSpell(me, castId, me)
     end
@@ -3315,7 +3545,8 @@ function C.ops.end_turn()
         tb.RequestedEndTurn = true
         entity(me):Replicate("TurnBased")
     end)
-    C.turn.ended = me
+    if type(C.turn.ended) ~= "table" then C.turn.ended = {} end
+    C.turn.ended[bare(me)] = true
     local waiting = {}
     for _, p in ipairs(party()) do
         if not same(p, me) then
@@ -3348,6 +3579,8 @@ function C.ops.say(args)
 end
 
 function C.ops.events(args)
+    pcall(C.watchParty)
+    pcall(C.watchFight)
     local since = tonumber(args.since) or 0
     if args.epoch ~= C.epoch then since = 0 end
     -- a bridge that just started asks only for recent events, not hours of backlog
@@ -3533,9 +3766,19 @@ local function initiative(uuid)
     return ok and v or nil
 end
 
-local function downed(uuid) return truthy(osi(Osi.HasActiveStatus, uuid, "DOWNED")) end
+local K = {} -- combat helpers (the main chunk is near Lua's 200 locals)
+K.BLOW_MS = 300 -- AttackedBy events this close together are one blow
 
 C.clog = C.clog or { seq = 0, mark = 0, rows = {} }
+C.fallen = C.fallen or {} -- [bare uuid] = true: party members already reported dead
+
+local function mine(u) return same(u, C.agent) end
+-- How the log names a fighter: "you", "使徒 (your summon)", or the name.
+local function who(u)
+    if mine(u) then return "you" end
+    if C.isMySummon(u) then return C.name(u) .. " (your summon)" end
+    return C.name(u)
+end
 
 local function inMyFight(u)
     if not (C.agent and inCombat(C.agent)) then return false end
@@ -3549,9 +3792,24 @@ local function logCombat(row)
     local L = C.clog
     -- one spell hitting several targets is one line
     local last = L.rows[#L.rows]
-    if row.cast and last and last.cast == row.cast and last.by == row.by
-        and row.on and last.on and now() - (last.t or 0) < 1000 then
-        last.on[#last.on + 1] = row.on[1]
+    local recent = last and now() - (last.t or 0) < 1000
+    if row.cast and recent and last.cast == row.cast and last.by == row.by then
+        -- a cast at a spot (a shout) is logged when it goes off; any per-target event joins it
+        if row.on then
+            last.on = last.on or {}
+            local dup = false
+            for _, x in ipairs(last.on) do dup = dup or x == row.on[1] end
+            if not dup then last.on[#last.on + 1] = row.on[1] end
+        end
+        return
+    end
+    -- one blow raises AttackedBy once per damage type (a slash and its fire): one line, the sum
+    local blow = last and recent and now() - (last.t or 0) < K.BLOW_MS and last.by == row.by
+    if blow and (row.hit or row.no_damage) and (last.hit or last.no_damage) == (row.hit or row.no_damage) then
+        if row.hit then
+            last.damage = (tonumber(last.damage) or 0) + (tonumber(row.damage) or 0)
+            last.hit, last.no_damage = row.hit, nil
+        end
         return
     end
     L.seq = L.seq + 1
@@ -3605,41 +3863,197 @@ function C.ops.examine(args)
     end)
     if out.rel == "you" or out.rel == "party" then out.hp = hv; out.max_hp = mh
     elseif hv and mh and mh > 0 then out.hp_pct = math.floor(hv * 100 / mh) end
+    out.pos = { r1(p[1]), r1(p[2]), r1(p[3]) }
+    if out.rel ~= "you" then out.walk_m = K.walkTo(me, p, C.pos(me)) end
     return out
+end
+
+
+-- Everyone in the agent's fight within COMBAT_RANGE, and party members who are down or dead
+-- (the game takes the dead, and at times the downed, out of the fight's lists).
+function K.fighters(me)
+    local cg = osi(Osi.CombatGetGuidFor, me)
+    local mypos = C.pos(me)
+    local out = {}
+    local ok, list = pcall(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter")
+    for _, e in ipairs(ok and list or {}) do
+        local u, p = entityUuid(e), entityPos(e)
+        local d = u and p and mypos and dist(mypos, p)
+        if d and d <= COMBAT_RANGE then
+            local fighting = inCombat(u) and (same(u, me) or not hidden(u))
+                and (cg == nil or same(osi(Osi.CombatGetGuidFor, u), cg))
+            if fighting or (isParty(u) and (isDead(u) or isDowned(u))) then
+                out[#out + 1] = { u = u, e = e, p = p, d = d }
+            end
+        end
+    end
+    return out
+end
+
+function K.hpText(u, rel)
+    local h, m = hp(u)
+    if not (h and m and m > 0) then return nil end
+    if rel == "you" or rel == "party" then return h .. "/" .. m end
+    return math.floor(h * 100 / m) .. "%"
+end
+
+-- Everyone's HP, named statuses and downed/dead state, to compare with at the agent's next turn.
+function K.snapshot(me)
+    local snap = {}
+    for _, f in ipairs(K.fighters(me)) do
+        local rel = same(f.u, me) and "you" or (C.isMySummon(f.u) and "party") or relation(me, f.u)
+        local st = {}
+        for _, n in ipairs(statusNames(statusIds(f.u), 30, true)) do st[n] = true end
+        snap[bare(f.u)] = { u = f.u, who = who(f.u), hp = K.hpText(f.u, rel), st = st,
+            state = (isDead(f.u) and "dead") or (isDowned(f.u) and "downed") or nil }
+    end
+    return snap
+end
+
+-- The end of the agent's turn: the log and everyone's state start over from here.
+function K.markTurn(me)
+    C.clog.mark = C.clog.seq
+    local ok, snap = pcall(K.snapshot, me)
+    C.clog.snap = ok and snap or nil
+end
+
+-- What changed for each fighter since the agent's last turn: HP, statuses gained and lost,
+-- downed or dead, who came into the fight (summons, reinforcements) and who left it.
+function K.changesSince(me)
+    local before = C.clog.snap
+    if not before then return nil end
+    local after = K.snapshot(me)
+    local out = {}
+    for k, a in pairs(after) do
+        local b = before[k]
+        local row, changed = { who = a.who }, false
+        if not b then
+            row.joined, changed = true, true
+        else
+            if a.hp and b.hp and a.hp ~= b.hp then row.hp, changed = b.hp .. " -> " .. a.hp, true end
+            local gained, lost = {}, {}
+            for n in pairs(a.st) do if not b.st[n] then gained[#gained + 1] = n end end
+            for n in pairs(b.st) do if not a.st[n] then lost[#lost + 1] = n end end
+            table.sort(gained); table.sort(lost)
+            if #gained > 0 then row.now, changed = gained, true end
+            if #lost > 0 then row.no_longer, changed = lost, true end
+            if a.state ~= b.state then row.became, changed = a.state or "back on their feet", true end
+        end
+        if changed then out[#out + 1] = row end
+    end
+    for k, b in pairs(before) do
+        if not after[k] then
+            -- the invisible (a cultist that hid) are not listed but still fight
+            local gone = isDead(b.u) and "dead" or (inCombat(b.u) and "hidden (still in the fight)") or "out of the fight"
+            out[#out + 1] = { who = b.who, became = gone }
+        end
+    end
+    table.sort(out, function(x, y) return x.who < y.who end)
+    return out
+end
+
+-- A party member died. Osiris raises Died when one drops to 0 HP (downed, not dead), but not
+-- again when a downed one fails the death saves, so the party is also looked at on every poll.
+function K.noteDeath(u)
+    local k = bare(u)
+    if C.fallen[k] then return end
+    C.fallen[k] = true
+    if inMyFight(u) then logCombat({ died = who(u) }) end
+    push("died", { name = C.name(u), you = mine(u) or nil, human = same(u, human()) or nil })
+end
+
+function C.watchParty()
+    if not C.agent then return end
+    local first = not C.fallenInit -- the already dead are not news
+    C.fallenInit = true
+    for _, u in ipairs(party()) do
+        if isDead(u) then
+            if first then C.fallen[bare(u)] = true else K.noteDeath(u) end
+        else
+            C.fallen[bare(u)] = nil
+        end
+    end
+end
+
+-- Movement it takes `me` to get next to (1.5 m of) p, as the game reckons it: a number, false
+-- when there is no way on foot, nil when unknown (too far to bother, or no pathfinder).
+function K.walkTo(me, p, from)
+    if not (p and from) or flat(from, p) > 40 then return nil end
+    if flat(from, p) <= 1.5 then return 0 end
+    local plan = C.plan(me, p, 1.5)
+    if plan == nil then return nil end
+    if plan.why or not plan.pts then return false end
+    return r1(plan.cost_m or plan.walk_m)
 end
 
 function C.ops.combat()
     local me = agent()
     if not inCombat(me) then error("not in combat") end
-    local cg = osi(Osi.CombatGetGuidFor, me)
+    pcall(C.watchParty)
     local mypos = C.pos(me)
     local h = human()
-    local order = {}
-    local ok, list = pcall(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter")
-    for _, e in ipairs(ok and list or {}) do
-        local u = entityUuid(e)
-        local p = entityPos(e)
-        local d = p and dist(mypos, p)
-        if u and d and d <= COMBAT_RANGE and inCombat(u) and (same(u, me) or not hidden(u))
-            and (cg == nil or same(osi(Osi.CombatGetGuidFor, u), cg)) then
-            local rel = same(u, me) and "you" or relation(me, u)
-            local hv, mh = hp(u)
-            local row = { id = u, name = C.name(u), rel = rel, initiative = initiative(u),
-                human = same(u, h) or nil, downed = downed(u) or nil,
-                concentrating = concentrating(u), statuses = statusNames(statusIds(u), 6) }
-            if rel ~= "you" then row.dist = r1(d); row.dir = dir(mypos, p) end
-            if rel == "you" or rel == "party" then row.hp = hv; row.max_hp = mh
-            else
-                if hv and mh and mh > 0 then row.hp_pct = math.floor(hv * 100 / mh) end
-                local def = defenses(e)
-                row.resist, row.immune, row.vulnerable = def.resist, def.immune, def.vulnerable
-                row.immune_to = statusImmunities(e)
-            end
-            local tb = comp(e, "TurnBased")
-            local ok2, active = pcall(function() return tb.IsActiveCombatTurn end)
-            if ok2 and active == true then row.current = true end
-            order[#order + 1] = row
+    local order, summons = {}, {}
+    -- an enemy's traits come once per fight, the first time it is listed
+    C.clog.described = C.clog.described or {}
+    C.clog.explained = C.clog.explained or {}
+    local described, explained = C.clog.described, C.clog.explained
+    C.clog.calls = (C.clog.calls or 0) + 1
+    local call = C.clog.calls
+    for _, f in ipairs(K.fighters(me)) do
+        local u, e, p, d = f.u, f.e, f.p, f.d
+        local rel = same(u, me) and "you" or relation(me, u)
+        local yours = C.isMySummon(u)
+        local hv, mh = hp(u)
+        local info = {}
+        -- what an enemy's statuses do, each status once per fight (like traits)
+        local explain = rel == "enemy" and function(dn, st)
+            if explained[dn] then return end
+            explained[dn] = true
+            local what = plainText(stat(st, "Description"), stat(st, "DescriptionParams"), 100)
+            if what and what ~= "" and not what:find("^%%%%%%") then info[#info + 1] = { name = dn, what = what } end
+        end or nil
+        local row = { id = u, name = C.name(u), rel = rel, initiative = initiative(u),
+            human = same(u, h) or nil, downed = isDowned(u) or nil, dead = isDead(u) or nil,
+            your_summon = yours or nil, concentrating = concentrating(u),
+            statuses = statusNames(statusIds(u), 12, false, explain) }
+        if #info > 0 then row.status_info = info end
+        if p then row.pos = { r1(p[1]), r1(p[2]), r1(p[3]) } end
+        if rel ~= "you" then
+            row.dist = r1(d); row.dir = dir(mypos, p)
+            if not row.dead then row.walk_m = K.walkTo(me, p, mypos) end
         end
+        if rel == "you" or rel == "party" or yours then row.hp = hv; row.max_hp = mh
+        else
+            if hv and mh and mh > 0 then row.hp_pct = math.floor(hv * 100 / mh) end
+            local def, ac = defenses(e)
+            row.resist, row.immune, row.vulnerable = def.resist, def.immune, def.vulnerable
+            row.immune_to = statusImmunities(e)
+            row.ac = ac
+            pcall(function() row.level = e.EocLevel.Level end)
+            if rel == "enemy" and not described[bare(u)] then
+                described[bare(u)] = true
+                -- the same kind of enemy (six 巴尔之镰) has the same traits: one listing gives them
+                -- for all of that kind (the bridge puts them on one line), later ones not again
+                local t = traits(e)
+                local names = {}
+                for _, x in ipairs(t) do names[#names + 1] = x.name end
+                local sig = "traits:" .. table.concat(names, "|")
+                if #t > 0 and (described[sig] == nil or described[sig] == call) then
+                    described[sig] = call
+                    row.traits = t
+                end
+            end
+        end
+        local tb = comp(e, "TurnBased")
+        local ok2, active = pcall(function() return tb.IsActiveCombatTurn end)
+        if ok2 and active == true then row.current = true end
+        if yours then
+            local its, ended = turnState(u)
+            local s = turnBudget(u)
+            s.id, s.name, s.its_turn, s.turn_ended = u, row.name, its or nil, ended or nil
+            summons[#summons + 1] = s
+        end
+        order[#order + 1] = row
     end
     table.sort(order, function(a, b) return (a.initiative or -999) > (b.initiative or -999) end)
     local mine_, ended = turnState(me)
@@ -3648,7 +4062,17 @@ function C.ops.combat()
     out.turn_ended = ended or nil
     out.order = order
     out.since_your_last_turn = sinceMyTurn(30)
+    out.changes_since_your_last_turn = K.changesSince(me)
+    if #summons > 0 then out.your_summons = summons end
     return out
+end
+
+-- Cheap enough for every tool call: is it the agent's turn, and which one (the bridge hands
+-- the whole picture over once per turn, with the first result of that turn).
+function C.ops.turn_check()
+    if not (C.agent and inCombat(C.agent)) then return { epoch = C.epoch, n = C.turn.n or 0 } end
+    local mine_, ended = turnState(C.agent)
+    return { epoch = C.epoch, n = C.turn.n or 0, my_turn = (mine_ and not ended) or nil }
 end
 
 ------------------------------------------------------------------------
@@ -3656,29 +4080,62 @@ end
 -- through C.on, so re-sending this file updates them.
 ------------------------------------------------------------------------
 
-local function mine(u) return same(u, C.agent) end
-local function who(u) return mine(u) and "you" or C.name(u) end
-
 C.on.TurnStarted = function(u)
     C.turn.current = u
     if mine(u) then
-        C.turn.ended = nil
+        C.turn.ended = {}
+        C.turn.n = (C.turn.n or 0) + 1
+        push("your_turn", turnBudget(u))
+    elseif C.isMySummon(u) then
         local ev = turnBudget(u)
-        ev.since_last_turn = sinceMyTurn(12)
-        push("your_turn", ev)
+        ev.name, ev.id = C.name(u), u
+        push("summon_turn", ev)
     end
 end
 C.on.TurnEnded = function(u)
     if same(C.turn.current, u) then C.turn.current = nil end
-    if mine(u) then C.clog.mark = C.clog.seq end
+    if mine(u) then K.markTurn(u) end
 end
-C.on.CombatStarted = function()
-    if C.agent and inCombat(C.agent) then
-        C.clog.mark = C.clog.seq
-        push("combat_started", {})
+-- A fight the agent is in starts over: the log, the snapshot, what was told about enemies.
+function C.fightBegins()
+    C.fightId = osi(Osi.CombatGetGuidFor, C.agent) or true
+    C.clog.mark, C.clog.snap, C.clog.described, C.clog.explained = C.clog.seq, nil, {}, {}
+    push("combat_started", {})
+end
+
+-- The agent can be drawn into a fight after it started (it stood too far off when the human's
+-- dialogue ended in one, 2026-11-04): CombatStarted came while it was not in it. Each poll looks.
+function C.watchFight()
+    if not C.agent then return end
+    if not inCombat(C.agent) then
+        -- its fight ended without a CombatEnded for it (it fled, or the flag lagged behind the event)
+        if C.fightId ~= nil then C.fightEnds() end
+        return
     end
+    local cg = osi(Osi.CombatGetGuidFor, C.agent) or true
+    if C.fightId == nil or (C.fightId ~= true and cg ~= true and C.fightId ~= cg) then C.fightBegins() end
 end
-C.on.CombatEnded = function() C.turn.ended = nil; push("combat_ended", {}) end
+
+C.on.CombatStarted = function()
+    if C.agent and inCombat(C.agent) and C.fightId == nil then C.fightBegins() end
+end
+-- Once per fight the agent was in, from whichever of CombatEnded and the poll sees it first.
+function C.fightEnds()
+    C.fightId = nil
+    C.turn.ended = {}
+    C.clog.snap, C.clog.described, C.clog.explained = nil, {}, {}
+    push("combat_ended", {})
+end
+C.on.CombatEnded = function(cg)
+    if C.fightId == nil then
+        -- a fight without the agent (the human's, say): still worth a word
+        C.turn.ended = {}
+        push("combat_ended", {})
+    elseif C.fightId == true or C.fightId == cg or not (C.agent and inCombat(C.agent)) then
+        C.fightEnds()
+    end
+    -- another fight than the agent's, or IsInCombat still set: the next poll looks again
+end
 C.on.DialogStarted = function(_, inst)
     if not C.agent then return end
     -- actors join right after the start event
@@ -3700,10 +4157,19 @@ C.on.DialogEnded = function(_, inst)
 end
 C.on.CastedSpell = function(caster, spell)
     local pend = C.pending
-    if not (pend and mine(caster) and spell == pend.spell) then return end
+    if not (pend and same(caster, pend.caster) and spell == pend.spell) then return end
     C.pending = nil
     pay(caster, pend.costs, pend.combat)
     if pend.after then pcall(pend.after) end
+    -- a cast at a spot (shouts go at the caster's feet) raises no UsingSpellOnTarget: log it here
+    if pend.spot and inMyFight(caster) then
+        local on = {}
+        if pend.around then
+            if C.heals(Ext.Stats.Get(spell)) then on[1] = who(caster) end
+            for _, u in ipairs(pend.around) do on[#on + 1] = who(u) end
+        end
+        logCombat({ by = who(caster), cast = spellName(spell), on = #on > 0 and on or nil })
+    end
     local j = C.jobs[pend.job]
     if j then
         j.data.cast = nil
@@ -3713,11 +4179,12 @@ C.on.CastedSpell = function(caster, spell)
             r.cast = spell
             return r
         end
+
     end
 end
 C.on.CastSpellFailed = function(caster, spell)
     local pend = C.pending
-    if not (pend and mine(caster) and spell == pend.spell) then return end
+    if not (pend and same(caster, pend.caster) and spell == pend.spell) then return end
     C.pending = nil
     local j = C.jobs[pend.job]
     if j then finish(j, "failed", nil, pend.failed or "the game refused the cast: the target may not be valid for it (Help needs a downed ally), or out of sight or reach") end
@@ -3729,7 +4196,10 @@ C.on.Died = function(u)
     -- before the near check: the dead may already have left the fight
     local fight = inCombat(C.agent) and (isParty(u) or (dist(C.pos(C.agent), C.pos(u)) or 1e9) <= COMBAT_RANGE)
     local function report()
-        if isParty(u) and not truthy(osi(Osi.IsDead, u)) then return end
+        if isParty(u) then
+            if isDead(u) then K.noteDeath(u) end
+            return
+        end
         if fight then logCombat({ died = who(u) }) end
         if mine(u) or (dist(C.pos(C.agent), C.pos(u) or { 1e9, 0, 0 }) or 1e9) < SIGHT then
             push("died", { name = C.name(u), you = mine(u) or nil })
@@ -3737,7 +4207,10 @@ C.on.Died = function(u)
     end
     if not (isParty(u) and pcall(function() Ext.Timer.WaitFor(300, function() pcall(report) end) end)) then report() end
 end
-C.on.AttackedBy = function(defender, attacker, _, _, damage)
+-- AttackedBy(defender, attackerOwner, attacker, damageType, damage, cause, story): the owner of a
+-- summon is the summoner, so the one who struck is the third argument.
+C.on.AttackedBy = function(defender, owner, attacker, _, damage)
+    if attacker == nil or attacker == "" or tostring(attacker):find("^NULL_") then attacker = owner end
     if mine(defender) then push("attacked", { by = C.name(attacker), damage = damage }) end
     if not inMyFight(defender) then return end
     -- a miss, a passed save or an immunity still raises AttackedBy, with 0 damage
@@ -3770,6 +4243,10 @@ C.on.StatusApplied = function(u, status, causee)
     if inMyFight(u) then logCombat({ status = ctl, on = who(u) }) end
 end
 C.on.StatusRemoved = function(u, status)
+    -- a downed party member who failed the death saves dies without a Died event
+    if status == "DOWNED" and isParty(u) then
+        pcall(function() Ext.Timer.WaitFor(500, function() pcall(C.watchParty) end) end)
+    end
     if mine(u) and controlStatus(status) then push("control_ended", { status = controlStatus(status) }) end
     if mine(u) and status == SNEAKING then
         if C.sneakOff and now() - C.sneakOff < 3000 then
@@ -3784,15 +4261,19 @@ C.on.StatusRemoved = function(u, status)
 end
 C.on.LeveledUp = function(u) if mine(u) then push("level_up", {}) end end
 -- Passive checks (spotting a hidden item or trap: GLO_CONST_HiddenItemCheck...) raise
--- RollResult with isActiveRoll 0; resultType 1 is a success.
+-- RollResult with isActiveRoll 0; resultType 1 is a success. A save against the agent's spell
+-- comes the same way (GAMEPLAY_SpellSavingThrowSave, the enemy as subject, 2026-11-04): not a find.
 C.on.RollResult = function(event, roller, subject, result, active)
     if not (mine(roller) and tonumber(active) == 0 and tonumber(result) == 1) then return end
+    local ev = tostring(event)
+    if ev:find("SavingThrow") or ev:find("Spell") then return end
     local me, at = C.pos(C.agent), C.pos(subject)
     push("noticed", { name = C.name(subject), id = subject,
         dist = me and at and r1(dist(me, at)) or nil, dir = me and at and dir(me, at) or nil,
         check = tostring(event):gsub("^GLO_CONST_", "") })
 end
 
+do -- (a block: the main chunk is near Lua's 200 locals)
 local ARITY = { TurnStarted = 1, TurnEnded = 1, CombatStarted = 1, CombatEnded = 1, DialogStarted = 2,
     DialogActorJoined = 4, DialogEnded = 2, CastedSpell = 5, CastSpellFailed = 5, Died = 1, AttackedBy = 7,
     LeveledUp = 1, UsingSpellOnTarget = 6, StatusApplied = 4, StatusRemoved = 4, RollResult = 6 }
@@ -3809,10 +4290,23 @@ for name, arity in pairs(ARITY) do
         C.listening[name] = ok
     end
 end
+end
 
 ------------------------------------------------------------------------
 -- RPC entry point
 ------------------------------------------------------------------------
+
+-- What a summon of the agent can be told to do (args.as names it).
+C.ACTS_FOR_SUMMON = { move = true, cast = true, end_turn = true, spells = true, stop = true }
+
+function C.summonOf(q)
+    if not C.agent then error("no agent character chosen yet: call set_agent first") end
+    local low = tostring(q):lower()
+    for _, u in ipairs(C.mySummons()) do
+        if same(u, q) or C.name(u):lower():find(low, 1, true) then return u end
+    end
+    error("you have no summon " .. tostring(q) .. " (combat lists yours)")
+end
 
 function C.rpc(json)
     local ok, req = pcall(Ext.Json.Parse, json)
@@ -3821,7 +4315,17 @@ function C.rpc(json)
     end
     local fn = C.ops[req.op]
     if not fn then return Ext.Json.Stringify({ ok = false, error = "unknown op " .. tostring(req.op) }) end
-    local ok2, res = pcall(fn, req.args or {})
+    local args = req.args or {}
+    C.actor = nil
+    pcall(C.watchFight)  -- every call sees the fight as it is now, not as at the last events poll
+    local ok2, res = pcall(function()
+        if args.as then
+            if not C.ACTS_FOR_SUMMON[req.op] then error(req.op .. " cannot be done by a summon") end
+            C.actor = C.summonOf(args.as)
+        end
+        return fn(args)
+    end)
+    C.actor = nil
     if ok2 then
         return Ext.Json.Stringify({ ok = true, result = res }, { Beautify = false, StringifyInternalTypes = true })
     end

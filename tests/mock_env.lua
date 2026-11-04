@@ -161,8 +161,16 @@ function ent(id)
         -- the way each one faces: no rotation looks along -Z (south)
         Transform = { Transform = { Translate = W.pos[u], RotationQuat = W.rot[u] or { 0, 0, 0, 1 } } },
         Sight = { Sight = 16.0, FOV = 90.0 },
-        Health = { Hp = 20, MaxHp = 25 },
-        TurnBased = { IsActiveCombatTurn = W.combat and (W.turn == u or (W.shared_turn and u == g(W.host))) },
+        Health = (W.hp and W.hp[u]) or { Hp = 20, MaxHp = 25 }, -- MOCK.hp[uuid] = { Hp =, MaxHp = }
+        -- MOCK.turns[uuid] = true: also in the turn (the agent and its summon share one)
+        TurnBased = { IsActiveCombatTurn = W.combat and (W.turn == u or (W.shared_turn and u == g(W.host))
+            or (W.turns ~= nil and W.turns[u] == true)) },
+        -- MOCK.summons[uuid] = { summon ids }
+        SummonContainer = { Characters = (function()
+                local out = {}
+                for _, id in ipairs(W.summons and W.summons[u] or {}) do out[#out + 1] = { Uuid = { EntityUuid = g(id) } } end
+                return out
+            end)() },
         FleeCapability = { Flags = W.fleeFlags or {}, CurrentFleeDistance = 27, FleeDistance = 4.2 },
         CombatParticipant = { InitiativeRoll = W.init[u] or -100 },
         -- the goblin resists fire, is immune to poison, takes double radiant and cannot be charmed
@@ -184,6 +192,10 @@ function ent(id)
             { SpellId = { OriginatorPrototype = "Zone_BurningHands" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
             { SpellId = { OriginatorPrototype = "Shout_SpiritGuardians" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
             { SpellId = { OriginatorPrototype = "Shout_TurnUndead" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
+            { SpellId = { OriginatorPrototype = "Shout_HealingWord_Mass" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
+            { SpellId = { OriginatorPrototype = "Shout_RadianceOfTheDawn" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
+            { SpellId = { OriginatorPrototype = "Target_FlamingSphere" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
+            { SpellId = { OriginatorPrototype = "Teleportation_Revivify" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
         } },
         SpellBookPrepares = { PreparedSpells = (function()
                 local out = { { OriginatorPrototype = "Target_MainHandAttack" } }
@@ -196,7 +208,8 @@ function ent(id)
                 return out
             end)() },
         InterruptPreferences = { Preferences = prefs(u).view },
-        StatusContainer = { Statuses = { "BLESSED", table.unpack(u == g(W.sh) and W.statuses or {}) } },
+        StatusContainer = { Statuses = { "BLESSED", table.unpack(u == g(W.sh) and W.statuses
+            or (W.st and W.st[u]) or {}) } }, -- MOCK.st[uuid] = { statuses } for others
         Replicate = function() end,
         Tag = { Tags = (W.undead and W.undead[u]) and { "undead-tag" } or {} },
     }
@@ -263,6 +276,11 @@ Ext = {
         GetAllEntitiesWithComponent = function(name)
             local out = {}
             if name == "ServerRoomTrigger" then return W.rooms or {} end -- MOCK.rooms: { {Transform=..., TriggerArea=...} }
+            -- MOCK.summoner[summon uuid] = summoner (Osi.CharacterGetOwner); IsSummon is on them
+            if name == "IsSummon" then
+                for u in pairs(W.summoner or {}) do out[#out + 1] = ent(u) end
+                return out
+            end
             local list = name == "ServerCharacter" and W.chars or W.items
             for _, id in ipairs(list) do out[#out + 1] = ent(id) end
             return out
@@ -279,7 +297,8 @@ Ext = {
         if name == "Target_MainHandAttack" then return { DisplayName = "Attack", Level = 0, UseCosts = "ActionPoint:1",
             TargetRadius = "MeleeMainWeaponRange", VerbalIntent = "Damage" } end
         if name == "Projectile_GuidingBolt" then return { DisplayName = "Guiding Bolt", Level = 1,
-            UseCosts = "ActionPoint:1;SpellSlotsGroup:1:1:1", TargetRadius = "18", VerbalIntent = "Damage" } end
+            UseCosts = "ActionPoint:1;SpellSlotsGroup:1:1:1", TargetRadius = "18", VerbalIntent = "Damage",
+            TargetConditions = "not Dead()" } end
         if name == "Target_CureWounds" then return { DisplayName = "Cure Wounds", Level = 1,
             UseCosts = "ActionPoint:1;SpellSlotsGroup:1:1:1", TargetRadius = "1.5", VerbalIntent = "Healing" } end
         -- area spells, with the fields the friendly-fire check reads (as in the game's stats)
@@ -294,6 +313,14 @@ Ext = {
         if name == "Shout_TurnUndead" then return { DisplayName = "Turn Undead", Level = 0, UseCosts = "ActionPoint:1",
             VerbalIntent = "Control", SpellType = "Shout", AreaRadius = "9",
             TargetConditions = "Character() and Tagged('UNDEAD') or HasStatus('LOW_GHOST_POSSESSED')" } end
+        if name == "Shout_HealingWord_Mass" then return { DisplayName = "Mass Healing Word", Level = 0,
+            UseCosts = "BonusActionPoint:1", VerbalIntent = "Healing", SpellType = "Shout", AreaRadius = "9",
+            TargetConditions = "Ally() and not Dead()",
+            SpellProperties = { { Functors = { { TypeId = "RegainHitPoints" } } } } } end
+        -- burns enemies, though the game calls it a healing spell
+        if name == "Shout_RadianceOfTheDawn" then return { DisplayName = "Radiance of the Dawn", Level = 0,
+            UseCosts = "ActionPoint:1", VerbalIntent = "Healing", SpellType = "Shout", AreaRadius = "9",
+            TargetConditions = "Enemy() and Character()", SpellSuccess = { { Functors = { { TypeId = "DealDamage" } } } } } end
         if name == "Interrupt_WardingFlare" then return { DisplayName = "Warding Flare", Cost = "ReactionActionPoint:1" } end
         if name == "Interrupt_Shield" then return { DisplayName = "Shield", Cost = "ReactionActionPoint:1;SpellSlotsGroup:1:1:1" } end
         if name == "Interrupt_AttackOfOpportunity" then return { DisplayName = "Attack of Opportunity", Cost = "ReactionActionPoint:1" } end
@@ -303,7 +330,18 @@ Ext = {
         if name == "Hidden_Passive" then return { DisplayName = "Technical", Properties = { "IsHidden" } } end
         if name == "Nimble" then return { DisplayName = "Nimble Escape", Properties = {}, Description = "Disengage or hide as a bonus action." } end
         if name == "SLEEPING" then return { DisplayName = "Asleep", StatusGroups = { "SG_Condition", "SG_Sleeping" } } end
-        if name == "BURNING" then return { DisplayName = "Burning", StatusGroups = "SG_Surface;SG_Light" } end
+        if name == "BURNING" then return { DisplayName = "Burning", StatusGroups = "SG_Surface;SG_Light",
+            Description = "Takes [1] at the start of <LSTag>each</LSTag> turn.", DescriptionParams = "DealDamage(1d4,Fire)" } end
+        -- kept off the portraits, out of the combat log, or only unlocking an action for a turn
+        if name == "DIFFICULTY" then return { DisplayName = "Hardcore", StatusPropertyFlags = { "DisableOverhead", "DisablePortraitIndicator" } } end
+        if name == "GWM_BONUS_ATTACK" then return { DisplayName = "GWM: Bonus Attack", StatusPropertyFlags = { "DisableOverhead", "DisableCombatlog" },
+            Boosts = "UnlockSpell(Target_GreatWeaponMaster_BonusAttack)" } end
+        if name == "MARTIAL_ARTS" then return { DisplayName = "Martial Arts", StatusPropertyFlags = {},
+            Boosts = "UnlockSpell(Target_UnarmedStrike_Monk)" } end
+        -- a summon: it goes on the ground, not on a character
+        if name == "Target_FlamingSphere" then return { DisplayName = "Flaming Sphere", Level = 0, UseCosts = "ActionPoint:1",
+            TargetRadius = "18", SpellType = "Target", VerbalIntent = "Summon", SpellFlags = { "IsSpell", "CannotTargetCharacter" },
+            TargetConditions = "CanStand('x') and not Character() and not Self()" } end
         if name == "Target_Bless" then return { DisplayName = "Bless", Level = 1, UseCosts = "ActionPoint:1;SpellSlotsGroup:1:1:1" } end
         if name == "OBJ_Potion_Healing" then return { ModifierList = "Object", ItemUseType = "Potion",
             ObjectCategory = "PotionHealing", UseCosts = "BonusActionPoint:1" } end
@@ -313,6 +351,9 @@ Ext = {
         if name == "OBJ_Grease" then return { ModifierList = "Object", ItemUseType = "Grenade", UseCosts = "ActionPoint:1" } end
         if name == "Throw_Throw" then return { DisplayName = "Throw", UseCosts = "ActionPoint:1" } end
         if name == "OBJ_Scroll_Revivify" then return { ModifierList = "Object", ItemUseType = "Scroll", UseCosts = "ActionPoint:1" } end
+        if name == "Teleportation_Revivify" then return { DisplayName = "Revivify", Level = 3, UseCosts = "ActionPoint:1",
+            SpellType = "Teleportation", TargetConditions = "not Character()",
+            OriginTargetConditions = "(Dead() or IsDowned()) and Tagged('PLAYABLE')" } end
         if name == "Teleportation_Revivify_Scroll" then return { DisplayName = "Revivify", Level = 3, UseCosts = "ActionPoint:1",
             OriginTargetConditions = "(Dead() or IsDowned()) and Tagged('PLAYABLE')" } end
         return nil
@@ -389,6 +430,7 @@ end
 -- A throw at a character (`thrown` given) shows up a tick later and names what is thrown itself.
 local function castLater(c, s, target, thrown)
     if thrown then runTimers() end
+    if W.walkOnCast then local p = W.pos[g(c)]; moveTo(c, { p[1] + W.walkOnCast, p[2], p[3] }) end
     W.castq[1] = { Caster = ent(c), Spell = { Prototype = s, OriginatorPrototype = s },
         CastOptions = { "IgnoreSpellRolls", "AvoidDangerousAuras", "IgnoreCastChecks", "IgnoreTargetChecks", "IgnoreHasSpell" },
         Targets = { { Target = target and ent(target) or nil, Position = not target and { 1, 0, 1 } or nil,
@@ -399,7 +441,7 @@ local function castLater(c, s, target, thrown)
     local opts = {}
     for _, o in ipairs(r.CastOptions) do opts[o] = true end
     W.castOptions[#W.castOptions + 1] = opts
-    if s == "Teleportation_Revivify_Scroll" then
+    if s == "Teleportation_Revivify_Scroll" or s == "Teleportation_Revivify" then
         local t = r.Targets[1]
         if not opts.IgnoreTargetChecks and not (t.Target and W.dead[g(t.Target.Uuid.EntityUuid)]) then
             return fire("CastSpellFailed", c, s, "", "", 1)
@@ -491,7 +533,7 @@ Osi = {
     GetDisplayName = function(u) return W.names[g(u)] end,
     GetPosition = function(u) local p = W.pos[g(u)]; if p then return p[1], p[2], p[3] end end,
     IsOnStage = function(u) return b(not (W.offstage and W.offstage[g(u)])) end,
-    IsInvisible = function() return 0 end,
+    IsInvisible = function(u) return b(W.invisible and W.invisible[g(u)]) end, -- MOCK.invisible[uuid] = true
     IsInvisibleByScript = function() return 0 end,
     IsOpened = function(u) return b(W.opened and W.opened[g(u)]) end, -- MOCK.opened[uuid] = true
     CanSee = function(_, u) return b(g(u) ~= g(W.wall_gob) and not (W.doors and W.doors[g(u)])) end,
@@ -612,7 +654,9 @@ Osi = {
             W.active[g(c)].SNEAKING = true
         end
         W.casts[#W.casts + 1] = s .. "@" .. g(t); castLater(c, s, t, thrown) end,
-    UseSpellAtPosition = function(c, s) W.casts[#W.casts + 1] = s .. "@pos"; castLater(c, s) end,
+    UseSpellAtPosition = function(c, s, x, y, z)
+        W.casts[#W.casts + 1] = s .. "@pos"; W.castAt = { x, y, z }; castLater(c, s) end,
+    CharacterGetOwner = function(u) return W.summoner and W.summoner[g(u)] or nil end,
     EndTurn = function() if not W.shared_turn then W.turn = nil end end,
     OpenMessageBox = function(_, text) W.message = text end,
     ShowNotification = function(_, text) W.notice = text end,

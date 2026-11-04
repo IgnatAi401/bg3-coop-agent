@@ -1,0 +1,40 @@
+{
+  "name": "bg3coop",
+  "version": "0.1.0",
+  "description": "Co-op Baldur's Gate 3 with an AI agent: the agent plays one party member next to you through Script Extender, on the same Windows PC.",
+  "author": {
+    "name": "IgnatAi401",
+    "url": "https://github.com/IgnatAi401"
+  },
+  "homepage": "https://github.com/IgnatAi401/bg3-coop-agent",
+  "repository": "https://github.com/IgnatAi401/bg3-coop-agent",
+  "license": "MIT",
+  "keywords": [
+    "baldurs-gate-3",
+    "bg3",
+    "game",
+    "co-op",
+    "mcp",
+    "script-extender"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "BG3 Co-op",
+    "shortDescription": "Play Baldur's Gate 3 together with your agent",
+    "longDescription": "Your agent takes over one party member in Baldur's Gate 3 and plays next to you: it follows, talks, fights on its turn and answers you through an in-game chat panel. Needs Windows, the game on Steam, Script Extender and uv; the game and Codex run on the same PC.",
+    "developerName": "IgnatAi401",
+    "category": "Games",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/IgnatAi401/bg3-coop-agent",
+    "defaultPrompt": [
+      "Start playing BG3 with me: you control Shadowheart.",
+      "Check that BG3 Co-op is connected to the game."
+    ],
+    "brandColor": "#C9A14A",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  }
+}

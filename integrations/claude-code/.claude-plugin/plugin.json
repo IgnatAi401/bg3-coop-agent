@@ -1,0 +1,17 @@
+{
+  "name": "bg3coop",
+  "displayName": "BG3 Co-op",
+  "version": "0.1.0",
+  "description": "Co-op Baldur's Gate 3 with an AI agent: the agent plays one party member next to you through Script Extender, on the same Windows PC.",
+  "author": {
+    "name": "IgnatAi401",
+    "url": "https://github.com/IgnatAi401"
+  },
+  "homepage": "https://github.com/IgnatAi401/bg3-coop-agent",
+  "repository": "https://github.com/IgnatAi401/bg3-coop-agent",
+  "license": "MIT",
+  "keywords": ["baldurs-gate-3", "bg3", "game", "co-op", "mcp", "script-extender"],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://github.com/IgnatAi401/bg3-coop-agent#readme",
+  "supportUrl": "https://github.com/IgnatAi401/bg3-coop-agent/issues"
+}

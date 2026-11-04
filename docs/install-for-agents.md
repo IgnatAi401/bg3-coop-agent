@@ -1,0 +1,202 @@
+# Installing BG3 Co-op (instructions for an AI agent)
+
+You are setting up BG3 Co-op for the person you are working with. When it is done, you (or
+another agent session) can play one party member next to them in Baldur's Gate 3. Work through
+the steps in order and tell them what you are doing in their language. Ask before downloading
+anything or changing files outside the places named here.
+
+## What is needed
+
+- Windows 10/11, Baldur's Gate 3 on Steam, and the game and the agent on the same PC.
+  Tested with game 4.1.1.7631656 (DirectX 11) and Script Extender v33.
+- **Python 3.10 or newer**, in any form: uv, pipx, a python.org / Microsoft Store Python, or a
+  conda environment.
+- **The package**: one wheel from the GitHub release. Its only dependency is `mcp`, which pip or
+  uv download.
+
+```
+WHEEL = https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl
+```
+
+## What "installed" means
+
+However you install it, you end up with two commands that work from a new terminal:
+
+| | runs | used for |
+| --- | --- | --- |
+| `BG3COOP` | `bg3coop`, or `<python> -m bg3coop.cli` | `BG3COOP setup`, `BG3COOP doctor` |
+| `BG3COOP_MCP` | `bg3coop-mcp`, or `<python> -m bg3coop.server` | the MCP server (stdio) the agent starts |
+
+**Done** means `BG3COOP doctor` prints only `OK` lines (a `SKIP`/`WARN` about the update check is
+fine) with the game running and a save loaded, and after a restart the agent has the `bg3` tools
+(`party` answers).
+
+## 1. Script Extender
+
+The game needs Norbyte's Script Extender: `DWrite.dll` in the game's `bin` folder (for example
+`D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin`). If it is not there, ask the person to
+download the latest release from https://github.com/Norbyte/bg3se/releases and put `DWrite.dll`
+into `bin`, or do it yourself with their permission.
+
+## 2. Install bg3coop
+
+First look at what the PC already has, and use that: `uv --version`, `pipx --version`,
+`py -0p` (Python launcher: lists installed Pythons), `python --version`, `conda env list`.
+Pick the first way that fits:
+
+| the PC has | install | `BG3COOP` / `BG3COOP_MCP` |
+| --- | --- | --- |
+| uv | nothing to install; or `uv tool install <WHEEL>` for permanent commands | `uvx --from <WHEEL> bg3coop` / `uvx --from <WHEEL> bg3coop-mcp` (or `bg3coop` / `bg3coop-mcp` after `uv tool install`) |
+| pipx | `pipx install <WHEEL>` | `bg3coop` / `bg3coop-mcp` |
+| Python ≥ 3.10 | its own venv, below | `<venv>\Scripts\bg3coop.exe` / `<venv>\Scripts\bg3coop-mcp.exe` |
+| conda | its own env, below | `<env>\python.exe -m bg3coop.cli` / `<env>\python.exe -m bg3coop.server` |
+
+A venv (replace `py -3.12` with the Python you found; `python` works too if it is ≥ 3.10):
+
+```powershell
+py -3.12 -m venv "$env:LOCALAPPDATA\bg3coop\venv"
+& "$env:LOCALAPPDATA\bg3coop\venv\Scripts\python.exe" -m pip install <WHEEL>
+```
+
+A conda env: `conda create -n bg3coop python=3.12`, then `<env>\python.exe -m pip install <WHEEL>`
+(`<env>` is the path `conda env list` shows for it).
+
+Rules:
+
+- Do not install into the system Python or conda's `base` environment, do not use admin rights,
+  and do not change the person's PATH or other environments.
+- If none of the above is there, stop and ask the person. Two choices: uv (one command,
+  `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, then a new
+  terminal), or Python from https://www.python.org/downloads/ .
+- Prefer full paths (`C:\Users\…\Scripts\bg3coop-mcp.exe`) when registering the MCP server: some
+  agents start it with a reduced PATH.
+- Run `BG3COOP --version` to confirm it works.
+
+## 3. Configure the game
+
+The game must be closed (it rewrites its mod list when it exits). Ask the person to quit it, then:
+
+```powershell
+BG3COOP setup
+```
+
+`setup` finds the game through Steam, turns on the Script Extender's Lua debugger (port 9998,
+local connections only) in `bin\ScriptExtenderSettings.json`, checks `DWrite.dll`, and installs
+the small "BG3 Co-op Memory" mod (`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods`, enabled
+in `modsettings.lsx`, the original backed up as `modsettings.lsx.bg3coop-backup`). The mod is
+optional, but recommended: it keeps the agent's memory in the save, namely where the party has
+been and the agent's goal/story/place notes (its promises, plans, what happened). Loading a save
+then takes that memory back to the same point. Saves made with the mod list it as required.
+
+If the person does not want it, run `BG3COOP setup --no-mod`, which leaves the Mods folder and
+`modsettings.lsx` alone and works with the game open; `doctor` then shows a WARN about the
+missing mod, which is expected. Before they choose, tell them what they give up: without the mod
+that memory lasts only until the next save load. Every load, quickload or reload after a death
+wipes the explored areas and those notes. Meanwhile the agent's conversation still remembers what
+happened before the load, so after going back to an older save it may act on promises, plans and
+events that no longer exist in that save, and it walks back over ground it has already explored.
+Persona and preference notes are kept on the PC and are not affected.
+
+If `setup` cannot find the game, pass `--game-dir "<install folder>"`. Every line should say what it did; fix any
+problem it reports and run it again.
+
+## 4. Connect the agent
+
+Register `BG3COOP_MCP` with the agent the person uses, under the name `bg3`, using the exact
+command that worked in step 2. Each agent has an official plugin that does this in one step,
+but the plugins start the server with `uvx`, so they need uv; otherwise register the command by
+hand.
+
+**Claude Code**
+
+- with uv: in Claude Code, `/plugin marketplace add IgnatAi401/bg3-coop-agent`, then
+  `/plugin install bg3coop@bg3-coop-agent` (in a terminal: `claude plugin marketplace add …` and
+  `claude plugin install …`)
+- otherwise, in a terminal: `claude mcp add --scope user bg3 -- BG3COOP_MCP`
+
+**Codex**
+
+- with uv, in a terminal:
+
+  ```powershell
+  codex plugin marketplace add IgnatAi401/bg3-coop-agent
+  codex plugin add bg3coop@bg3-coop-agent
+  ```
+
+  The plugin already sets the timeouts below.
+- otherwise: `codex mcp add bg3 -- BG3COOP_MCP`, then open `%USERPROFILE%\.codex\config.toml` and
+  add `tool_timeout_sec = 180` and `startup_timeout_sec = 120` under `[mcp_servers.bg3]`: the `ask`
+  tool waits up to two minutes for the human (Codex's default is 60 s).
+
+**DeepSeek Harness (dsh)**
+
+- with uv: install the dsh plugin package from the release, either on dsh's Plugins page ("Add
+  plugin", paste the address, install, enable) or in a terminal with
+  `dsh plugin add <address>` (`--profile <name>` for a profile other than the default):
+
+  ```
+  https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/dsh-bg3coop-0.1.0.tgz
+  ```
+
+- otherwise (or if installing fails), add the entry to the profile's patch file by hand
+  (`%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`, a YAML list; append, keep what is
+  there). `command` is the program and `args` the rest of `BG3COOP_MCP`, for example
+  `command: 'C:\Users\…\bg3coop\venv\Scripts\bg3coop-mcp.exe'` and `args: []`:
+
+```yaml
+- insert:
+    - id: mcp-bg3coop
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: bg3
+        transport: stdio
+        command: uvx
+        args: ['--from', '<WHEEL>', 'bg3coop-mcp']
+        toolCallTimeoutMs: 180000
+```
+
+Restart the agent (or start a new session) so it loads the server. Its tools appear as
+`party`, `set_agent`, `look`, … (prefixed with the server name, e.g. `mcp__bg3__party`). If the
+agent did not get the server instructions (older dsh versions), it reads them with the `rules` tool.
+
+## 5. Check
+
+Ask the person to start the game and load a save with the companion they want you to play in
+the party (the Script Extender downloads its runtime on the first start). Then:
+
+```powershell
+BG3COOP doctor
+```
+
+Every line should be `OK`; each `FAIL` says what to change. `doctor` also asks GitHub whether a
+newer release exists (skipped when offline).
+
+## 6. Start playing
+
+Tell the person how to start: in a new agent session, say "start playing, you control
+Shadowheart" (or another companion). In-game, F10 toggles the chat panel; middle-click points at
+things. Playing stays smooth when the agent keeps looping: Claude Code's `/loop`, dsh's goal or
+ralph mode.
+
+## Updating and removing
+
+`doctor` and the MCP server say when a newer release is out (the server once, in a tool result:
+pass it on to the person). Plugin and wheel always share one version number.
+
+- Update the same way it was installed. A plugin always starts the wheel of its own version, so
+  updating the plugin updates both: Claude Code `/plugin marketplace update bg3-coop-agent` (or
+  `claude plugin update bg3coop@bg3-coop-agent` in a terminal; auto-update is off for third-party
+  marketplaces until the person turns it on under Marketplaces in `/plugin`); Codex
+  `codex plugin marketplace upgrade bg3-coop-agent`; dsh: install the new release's `.tgz` address
+  the same way (Plugins page or `dsh plugin add <address>`), which replaces the old one. Restart the
+  agent afterwards. Otherwise use the new release's wheel URL: the new URL in the `uvx` commands and the MCP registration; `uv tool install --force <WHEEL>`;
+  `pipx install --force <WHEEL>`; or `<python> -m pip install --upgrade <WHEEL>` in the venv /
+  conda env. Then close the game and run `BG3COOP setup` again so the Memory mod is updated too
+  (`BG3COOP setup --no-mod` if the person skipped the mod; the game can stay open).
+- Remove: uninstall the plugin (`/plugin uninstall bg3coop@bg3-coop-agent`,
+  `codex plugin remove bg3coop@bg3-coop-agent`, `dsh plugin remove dsh-bg3coop`), or
+  `claude mcp remove bg3` / `codex mcp remove bg3` / delete the dsh patch entry; remove the package (`uv tool uninstall bg3coop`, `pipx uninstall bg3coop`, or
+  delete the venv folder / `conda env remove -n bg3coop`). With the game closed, delete
+  `BG3CoopMemory.pak` from the Mods folder and restore `modsettings.lsx.bg3coop-backup` (saves made
+  with the mod list it as required); set `EnableLuaDebugger` to `false` in
+  `bin\ScriptExtenderSettings.json`.

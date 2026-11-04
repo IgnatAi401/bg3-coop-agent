@@ -1,0 +1,12 @@
+# bg3coop bundle patch: one dsh-mcp-client instance that starts the bg3coop MCP server.
+# The server's instructions hold the play rules; the `rules` tool returns them for older clients.
+- insert:
+    - id: mcp-bg3coop
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: bg3
+        transport: stdio
+        command: uvx
+        args: ['--from', 'https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl', 'bg3coop-mcp']
+        # `ask` waits up to 120 s for the human
+        toolCallTimeoutMs: 180000

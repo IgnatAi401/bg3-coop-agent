@@ -1,0 +1,29 @@
+[project]
+name = "bg3coop"
+version = "0.1.0"
+description = "Co-op Baldur's Gate 3 with an AI agent: an MCP server that lets an agent play one party member"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.20"]
+
+[project.urls]
+Repository = "https://github.com/IgnatAi401/bg3-coop-agent"
+
+[project.scripts]
+bg3coop = "bg3coop.cli:main"
+bg3coop-mcp = "bg3coop.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "lupa>=2.4"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bg3coop"]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]

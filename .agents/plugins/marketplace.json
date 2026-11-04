@@ -1,0 +1,20 @@
+{
+  "name": "bg3-coop-agent",
+  "interface": {
+    "displayName": "BG3 Co-op"
+  },
+  "plugins": [
+    {
+      "name": "bg3coop",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Games"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "bg3-coop-agent",
+  "description": "BG3 Co-op: play Baldur's Gate 3 together with an AI agent.",
+  "owner": {
+    "name": "IgnatAi401",
+    "url": "https://github.com/IgnatAi401"
+  },
+  "plugins": [
+    {
+      "name": "bg3coop",
+      "source": "./integrations/claude-code",
+      "description": "Your agent plays one party member next to you in Baldur's Gate 3 (Windows, Script Extender).",
+      "category": "games"
+    }
+  ]
+}

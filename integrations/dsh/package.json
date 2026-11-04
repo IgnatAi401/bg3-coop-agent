@@ -1,0 +1,33 @@
+{
+  "name": "dsh-bg3coop",
+  "description": "Co-op Baldur's Gate 3 with an AI agent: the agent plays one party member next to you through Script Extender, on the same Windows PC.",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "author": "IgnatAi401 (https://github.com/IgnatAi401)",
+  "homepage": "https://github.com/IgnatAi401/bg3-coop-agent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IgnatAi401/bg3-coop-agent.git",
+    "directory": "integrations/dsh"
+  },
+  "keywords": ["dsh", "dsh-plugin", "baldurs-gate-3", "bg3", "mcp"],
+  "icon": "./assets/icon.png",
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["cordis.patch.yml", "locale", "assets"],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-mcp-client": ">=0.2.0-rc.1"
+  }
+}

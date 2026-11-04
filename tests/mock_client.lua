@@ -1,0 +1,71 @@
+-- Fake client-side Ext for offline tests: JSON, an empty UI root, and just enough IMGUI and
+-- events for the chat panel. MOCK_C.windows holds every window made; MOCK_C.subs the handlers.
+
+MOCK_C = { windows = {}, subs = {} }
+
+local function element(kind, label)
+    local el = { kind = kind, Label = label, Children = {}, colors = {} }
+    function el:SetColor(name, c) self.colors[name] = c end
+    function el:SetSize(size) self.size = size end
+    function el:SetScroll(v) self.scrolled = v end
+    function el:SetCollapsed(v) self.collapsed = v end
+    function el:Destroy() self.destroyed = true end
+    function el:RemoveAllChildren() self.Children = {} end
+    local function add(k)
+        return function(self, lbl, value)
+            local child = element(k, lbl)
+            if k == "input" then child.Text = value or "" end
+            self.Children[#self.Children + 1] = child
+            return child
+        end
+    end
+    el.AddText = add("text")
+    el.AddButton = add("button")
+    el.AddInputText = add("input")
+    el.AddChildWindow = add("child")
+    el.AddGroup = add("group")
+    return el
+end
+
+local function event(name)
+    return {
+        Subscribe = function(_, fn)
+            MOCK_C.subs[name] = MOCK_C.subs[name] or {}
+            local list = MOCK_C.subs[name]
+            list[#list + 1] = fn
+            return #list
+        end,
+        Unsubscribe = function(_, id) MOCK_C.subs[name][id] = false end,
+    }
+end
+
+function MOCK_C.fire(name, e)
+    for _, fn in ipairs(MOCK_C.subs[name] or {}) do
+        if fn then fn(e) end
+    end
+end
+
+-- The panel as the human sees it: the newest window and its log lines.
+function MOCK_C.panel()
+    local w = MOCK_C.windows[#MOCK_C.windows]
+    return w, w.Children[1], w.Children[2], w.Children[3]
+end
+
+Ext = {
+    Json = { Parse = function(s) return PY_parse(s) end, Stringify = function(v) return PY_stringify(v) end },
+    -- MOCK_C.pick: what the mouse is over, as the picking helper reports it
+    -- MOCK_C.root: a UI tree to read dialogues from (nil: nothing on screen)
+    UI = { GetRoot = function() return MOCK_C.root end, GetPickingHelper = function() return MOCK_C.pick end },
+    Loca = { GetTranslatedString = function(h) return (MOCK_C.loca or {})[h] or "" end },
+    IMGUI = {
+        NewWindow = function(label)
+            local w = element("window", label)
+            w.Open = true
+            MOCK_C.windows[#MOCK_C.windows + 1] = w
+            return w
+        end,
+    },
+    Events = { KeyInput = event("KeyInput"), Tick = event("Tick"), MouseButtonInput = event("MouseButtonInput") },
+    Utils = { MonotonicTime = function() return MOCK_C.now or 0 end,
+        GetGlobalSwitches = function() return { Language = MOCK_C.language or "English" } end },
+}

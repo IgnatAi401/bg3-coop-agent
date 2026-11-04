@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# the global gitignore excludes tests/; this repo keeps them
+!tests/

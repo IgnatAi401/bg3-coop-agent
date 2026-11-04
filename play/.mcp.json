@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bg3": {
+      "command": "uv",
+      "args": ["run", "--project", "..", "bg3coop-mcp"]
+    }
+  }
+}

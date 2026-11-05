@@ -15,7 +15,7 @@ anything or changing files outside the places named here.
   uv download.
 
 ```
-WHEEL = https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl
+WHEEL = https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl
 ```
 
 ## What "installed" means
@@ -172,7 +172,7 @@ hand.
   `dsh plugin add <address>` (`--profile <name>` for a profile other than the default):
 
   ```
-  https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/dsh-bg3coop-0.1.0.tgz
+  https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/dsh-bg3coop-0.1.1.tgz
   ```
 
 - otherwise (or if installing fails), add the entry to the profile's patch file by hand

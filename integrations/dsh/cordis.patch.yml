@@ -7,6 +7,6 @@
         serverName: bg3
         transport: stdio
         command: uvx
-        args: ['--from', 'https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl', 'bg3coop-mcp']
+        args: ['--from', 'https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl', 'bg3coop-mcp']
         # `ask` waits up to 120 s for the human
         toolCallTimeoutMs: 180000

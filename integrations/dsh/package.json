@@ -1,7 +1,7 @@
 {
   "name": "dsh-bg3coop",
   "description": "Co-op Baldur's Gate 3 with an AI agent: the agent plays one party member next to you through Script Extender, on the same Windows PC.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "author": "IgnatAi401 (https://github.com/IgnatAi401)",

@@ -2,7 +2,7 @@
   "mcpServers": {
     "bg3": {
       "command": "uvx",
-      "args": ["--from", "https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl", "bg3coop-mcp"],
+      "args": ["--from", "https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl", "bg3coop-mcp"],
       "startup_timeout_sec": 120,
       "tool_timeout_sec": 180
     }

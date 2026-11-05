@@ -25,7 +25,7 @@ agent 不会动你的鼠标和键盘，不占用你的前台和屏幕视野。�
 2. 关掉游戏，在 PowerShell 里运行：
 
    ```powershell
-   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop setup
+   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl bg3coop setup
    ```
 
    `setup` 会从 Steam 找到游戏，在 `bin` 目录写好 `ScriptExtenderSettings.json`（打开 Lua 调试端口 9998，原有设置保留），并检查 `DWrite.dll`。找不到游戏时用 `--game-dir` 指定安装目录。
@@ -53,7 +53,7 @@ agent 不会动你的鼠标和键盘，不占用你的前台和屏幕视野。�
    - **DeepSeek Harness**：在 dsh 的「插件」页点「添加插件」，填入下面的地址后安装并启用；或者在终端运行 `dsh plugin add` 加上这个地址（不是默认 profile 时加 `--profile <名字>`）。
 
      ```
-     https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/dsh-bg3coop-0.1.0.tgz
+     https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/dsh-bg3coop-0.1.1.tgz
      ```
 
    三个插件都用 uv 启动 MCP 服务器；没有 uv 时让 agent 按安装说明换别的方式。
@@ -90,7 +90,7 @@ claude
 2. 运行检查（可选）：
 
    ```powershell
-   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop doctor
+   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl bg3coop doctor
    ```
 
    每一行都是 `OK` 就可以开始。`FAIL` 那一行会写明要怎么改。游戏一次只接受一个连接，agent 正连着游戏时 `doctor` 会提示这一点，并跳过剩下的检查。

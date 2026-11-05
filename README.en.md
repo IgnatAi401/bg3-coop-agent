@@ -25,7 +25,7 @@ The game and the agent run on the same Windows PC. The commands below use [uv](h
 2. Close the game and run in PowerShell:
 
    ```powershell
-   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop setup
+   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl bg3coop setup
    ```
 
    `setup` finds the game through Steam, writes `ScriptExtenderSettings.json` into `bin` (turning on the Lua debugger port 9998 and keeping your other settings) and checks `DWrite.dll`. If it cannot find the game, pass the install folder with `--game-dir`.
@@ -53,7 +53,7 @@ The game and the agent run on the same Windows PC. The commands below use [uv](h
    - **DeepSeek Harness**: on dsh's Plugins page, choose "Add plugin", paste the address below, then install and enable it; or run `dsh plugin add` with that address in a terminal (add `--profile <name>` for a profile other than the default).
 
      ```
-     https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/dsh-bg3coop-0.1.0.tgz
+     https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/dsh-bg3coop-0.1.1.tgz
      ```
 
    All three plugins start the MCP server with uv; without uv, ask your agent to follow the install guide another way.
@@ -90,7 +90,7 @@ Then restart the agent (or start a new session), close the game and run `setup` 
 2. Run the check (optional):
 
    ```powershell
-   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop doctor
+   uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.1/bg3coop-0.1.1-py3-none-any.whl bg3coop doctor
    ```
 
    When every line says `OK` you are ready. A `FAIL` line says what to change. The game takes one connection at a time: while an agent is connected to it, `doctor` says so and skips the remaining checks.

@@ -34,6 +34,14 @@ class GameError(Exception):
     """The game refused an action; the message is meant for the agent."""
 
 
+class NotReady(GameError):
+    """The debugger answered, but the Lua state is not there yet: main menu or loading."""
+
+
+class DebuggerBusy(GameError):
+    """The debugger port took the connection but never answered: it serves one client at a time."""
+
+
 def _lua(name: str) -> str:
     return resources.files("bg3coop").joinpath("lua", name).read_text(encoding="utf-8")
 
@@ -142,6 +150,13 @@ class Game:
         client = RemoteLua("127.0.0.1", self.port, protocol_version=BG3SE_PROTOCOL_VERSION)
         try:
             client.connect()
+        except TimeoutError as e:
+            # Measured with SE v33: a second client gets the TCP connection and no handshake.
+            raise DebuggerBusy(
+                f"the game's debugger port ({self.address}) took the connection but did not answer: another "
+                "program is probably connected to it (the game serves one at a time), such as a second agent "
+                "session's bg3 server or `bg3coop doctor`. Close that one and try again."
+            ) from e
         except OSError as e:
             raise GameError(
                 "cannot reach the game's debugger port. Is BG3 running with the Script Extender "
@@ -161,7 +176,7 @@ class Game:
         except RemoteLuaError as e:
             msg = str(e)
             if "NOT_READY" in msg or "NO_DEBUGGEE" in msg:
-                raise GameError("no save is loaded yet (the game is at the main menu or loading)") from e
+                raise NotReady("no save is loaded yet (the game is at the main menu or loading)") from e
             raise
 
     def _ensure_injected(self, context: str) -> None:

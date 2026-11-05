@@ -36,13 +36,16 @@ fine) with the game running and a save loaded, and after a restart the agent has
 The game needs Norbyte's Script Extender: `DWrite.dll` in the game's `bin` folder (for example
 `D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin`). If it is not there, ask the person to
 download the latest release from https://github.com/Norbyte/bg3se/releases and put `DWrite.dll`
-into `bin`, or do it yourself with their permission.
+into `bin`, or do it yourself with their permission. The release asset is a zip named
+`BG3SE-Updater-<date>.zip`; `DWrite.dll` is the file inside it. It is not code-signed, which is
+normal for it.
 
 ## 2. Install bg3coop
 
-First look at what the PC already has, and use that: `uv --version`, `pipx --version`,
-`py -0p` (Python launcher: lists installed Pythons), `python --version`, `conda env list`.
-Pick the first way that fits:
+First look at what the PC already has: `uv --version`, `pipx --version`, `py -0p` (Python
+launcher: lists installed Pythons), `python --version`, `conda env list`. With uv, use it. Without
+uv, ask the person first whether to install it (next section), and only then pick the first way
+that fits:
 
 | the PC has | install | `BG3COOP` / `BG3COOP_MCP` |
 | --- | --- | --- |
@@ -64,17 +67,50 @@ A conda env: `conda create -n bg3coop python=3.12`, then `<env>\python.exe -m pi
 Rules:
 
 - Do not install into the system Python or conda's `base` environment, do not use admin rights,
-  and do not change the person's PATH or other environments.
-- If none of the above is there, stop and ask the person. Two choices: uv (one command,
-  `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, then a new
-  terminal), or Python from https://www.python.org/downloads/ .
+  and do not change the person's PATH or other environments (the uv installer is the one exception,
+  when they chose it).
+- If none of the above is there, stop and ask the person: uv (next section), or Python from
+  https://www.python.org/downloads/ .
 - Prefer full paths (`C:\Users\…\Scripts\bg3coop-mcp.exe`) when registering the MCP server: some
   agents start it with a reduced PATH.
 - Run `BG3COOP --version` to confirm it works.
 
+### Without uv: ask whether to install it
+
+The official plugins (step 4) start bg3coop with `uvx`, so they need uv. Without uv you install
+bg3coop yourself and register it with the agent by hand. Tell the person, in their language, what
+each choice brings and costs, and let them choose:
+
+**Install uv, then use the plugin**
+
+- What they get: bg3coop shows on the agent's plugin page, where it can be switched off or removed
+  like any plugin. Updating the plugin updates bg3coop as well, in one step. There is no venv to
+  look after, and the timeouts are already set (the `ask` tool waits up to two minutes for them).
+- What it costs: one more program on the PC. The installer is a script downloaded and run from
+  astral.sh: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+  (or `winget install --id astral-sh.uv -e`). It needs no admin rights. The script puts `uv.exe`,
+  `uvx.exe` and `uvw.exe` in `%USERPROFILE%\.local\bin` and adds that folder to their user PATH
+  (winget uses a folder of its own, also on PATH): the one change to PATH these instructions
+  allow, and only with their consent. uv keeps
+  downloaded packages in `%LOCALAPPDATA%\uv\cache`, and if it finds no Python 3.10+ it downloads one
+  of its own. The agent app has to be restarted after the install so it sees the new PATH.
+
+**Keep what the PC has**
+
+- What they get: nothing new beyond bg3coop's own venv or conda env, and PATH stays as it is.
+- What it costs: the agent's plugin page does not list bg3coop (it is a hand-registered MCP
+  server; step 4 says where it shows instead). Updates are by hand: install the new wheel into the
+  same venv or env, and the registration stays as it is. Removing it is also by hand.
+
+Both ways download the wheel and its dependencies (`mcp` and what it needs, from PyPI) once, and
+again for each update. They play the same; the difference is only in installing, updating and
+removing.
+
 ## 3. Configure the game
 
-The game must be closed (it rewrites its mod list when it exits). Ask the person to quit it, then:
+The game must be closed (it rewrites its mod list when it exits). First ask the person whether they
+want the Memory mod (below: what it keeps, and what they give up without it). Then ask them to quit
+the game, and run:
 
 ```powershell
 BG3COOP setup
@@ -83,7 +119,8 @@ BG3COOP setup
 `setup` finds the game through Steam, turns on the Script Extender's Lua debugger (port 9998,
 local connections only) in `bin\ScriptExtenderSettings.json`, checks `DWrite.dll`, and installs
 the small "BG3 Co-op Memory" mod (`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods`, enabled
-in `modsettings.lsx`, the original backed up as `modsettings.lsx.bg3coop-backup`). The mod is
+in `PlayerProfiles\Public\modsettings.lsx` next to it, the original backed up as
+`modsettings.lsx.bg3coop-backup`). `setup --dry-run` shows what it would change. The mod is
 optional, but recommended: it keeps the agent's memory in the save, namely where the party has
 been and the agent's goal/story/place notes (its promises, plans, what happened). Loading a save
 then takes that memory back to the same point. Saves made with the mod list it as required.
@@ -155,9 +192,20 @@ hand.
         toolCallTimeoutMs: 180000
 ```
 
+The entry above is complete; there is no need to look up the `dsh-mcp-client` schema. In the dsh
+desktop app, `dsh` is not on PATH: the command is
+`%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`, the profile is
+usually `desktop`, and that profile refuses `--dump-config`. The app picks up an edited patch file
+without a restart.
+
 Restart the agent (or start a new session) so it loads the server. Its tools appear as
 `party`, `set_agent`, `look`, … (prefixed with the server name, e.g. `mcp__bg3__party`). If the
 agent did not get the server instructions (older dsh versions), it reads them with the `rules` tool.
+
+Registered by hand, bg3 is an MCP server, not a plugin, so the agent's plugin list does not show
+it. Tell the person where it is instead: dsh lists it under Settings → Built-in plugins → Plugin
+list (global, entry `mcp-bg3coop`), Claude Code under `/mcp` (`claude mcp list`), Codex in
+`codex mcp list`.
 
 ## 5. Check
 
@@ -169,7 +217,15 @@ BG3COOP doctor
 ```
 
 Every line should be `OK`; each `FAIL` says what to change. `doctor` also asks GitHub whether a
-newer release exists (skipped when offline).
+newer release exists (skipped when offline). The last line says `All good.` only when nothing is
+left; otherwise it says what is (for example, loading a save). Then call `party`: when it lists the
+party, the install is done.
+
+The game accepts one debugger connection at a time. Once the agent's `bg3` server has connected
+(after its first game tool call), `doctor` cannot get in and says so instead of checking the rest;
+that is expected, not a fault.
+
+Delete what you downloaded for the install (the wheel, the Script Extender zip, temporary folders).
 
 ## 6. Start playing
 

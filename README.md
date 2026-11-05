@@ -93,7 +93,7 @@ claude
    uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop doctor
    ```
 
-   每一行都是 `OK` 就可以开始。`FAIL` 那一行会写明要怎么改。
+   每一行都是 `OK` 就可以开始。`FAIL` 那一行会写明要怎么改。游戏一次只接受一个连接，agent 正连着游戏时 `doctor` 会提示这一点，并跳过剩下的检查。
 
 3. 开一个新的 agent 会话，对它说「开始玩，你控制影心」。agent 会先接管并解除这名队友的链接，然后开始自己探索。
 

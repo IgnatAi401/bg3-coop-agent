@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import __version__, modpak, update
-from .game import GAME_PORT, Game, GameError
+from .game import GAME_PORT, DebuggerBusy, Game, GameError, NotReady
 
 BG3_APP_ID = "1086940"
 SE_RELEASES = "https://github.com/Norbyte/bg3se/releases"
@@ -226,6 +226,7 @@ def install_mod(dry_run: bool, base: Path | None = None) -> bool:
 @dataclass
 class Report:
     failed: bool = False
+    todo: str | None = None  # nothing failed, but what is left to do or check
 
     def add(self, level: str, text: str) -> None:
         if level == "FAIL":
@@ -263,6 +264,17 @@ def listen_addresses(netstat: str, port: int) -> list[str]:
             if p == str(port):
                 out.append(host)
     return out
+
+
+def connected_clients(netstat: str, port: int) -> int:
+    """How many TCP connections a program holds open to the listener on `port`, from `netstat -an`."""
+    n = 0
+    for line in netstat.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].upper() == "TCP" and parts[3].upper() == "ESTABLISHED":
+            if parts[1].rpartition(":")[2] == str(port):
+                n += 1
+    return n
 
 
 def cmd_doctor(a: argparse.Namespace) -> int:
@@ -316,6 +328,23 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         r.add("OK", f"connected: Script Extender v{se}, game {gv}, debugger protocol {proto}")
         if se.isdigit() and int(se) != TESTED_SE_VERSION:
             r.add("WARN", f"tested with Script Extender v{TESTED_SE_VERSION}; v{se} may behave differently")
+    except DebuggerBusy as e:
+        if netstat is not None and connected_clients(netstat, remote_port):
+            r.add("WARN", f"another program is connected to the debugger port {remote_port}, usually the agent's "
+                  "bg3 server (so it reached the game). The game serves one connection at a time, so doctor "
+                  "cannot check the rest")
+            r.todo = ("Not checked to the end: ask the agent to call `party`, or close the agent and run "
+                      "`bg3coop doctor` again.")
+        else:
+            r.add("FAIL", str(e))
+        game.close()
+        return _done(r)
+    except NotReady as e:
+        r.add("WARN", str(e))
+        r.todo = ("The game is still starting or loading: wait until it is at the main menu or in a save, "
+                  "then run `bg3coop doctor` again.")
+        game.close()
+        return _done(r)
     except GameError as e:
         r.add("FAIL", str(e))
         game.close()
@@ -328,6 +357,9 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     except GameError as e:
         loaded = False
         r.add("WARN", f"{e}: the agent can only play once a save is loaded")
+        r.todo = ("The setup is ready, but the agent cannot play yet: load a save with the companion it should "
+                  "play in the party (keep the game in front if it pauses in the background), then run "
+                  "`bg3coop doctor` again to check the rest.")
 
     if loaded:
         try:
@@ -369,7 +401,10 @@ def _check_update(r: Report) -> None:
 
 
 def _done(r: Report) -> int:
-    print("\nAll good." if not r.failed else "\nSome checks failed; fix the FAIL lines above.")
+    if r.failed:
+        print("\nSome checks failed; fix the FAIL lines above.")
+    else:
+        print("\n" + (r.todo or "All good."))
     return 1 if r.failed else 0
 
 

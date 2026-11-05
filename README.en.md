@@ -93,7 +93,7 @@ Then restart the agent (or start a new session), close the game and run `setup` 
    uvx --from https://github.com/IgnatAi401/bg3-coop-agent/releases/download/v0.1.0/bg3coop-0.1.0-py3-none-any.whl bg3coop doctor
    ```
 
-   When every line says `OK` you are ready. A `FAIL` line says what to change.
+   When every line says `OK` you are ready. A `FAIL` line says what to change. The game takes one connection at a time: while an agent is connected to it, `doctor` says so and skips the remaining checks.
 
 3. Open a new agent session and say "Start playing, you control Shadowheart". The agent takes over that companion, unchains it and starts exploring.
 

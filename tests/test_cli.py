@@ -183,3 +183,48 @@ def test_modsettings_gets_the_new_mod_version():
     assert new.count(modpak.MOD_UUID) == 1 and str(modpak.VERSION64) in new
     assert new.count('value="36028797018963968"') == 0  # GustavX in the fixture has no Version64
     assert modpak.enable_in_modsettings(new) is None
+
+
+def test_connected_clients():
+    netstat = NETSTAT + "  TCP    127.0.0.1:9998         127.0.0.1:50300        CLOSE_WAIT\n" \
+        "  TCP    127.0.0.1:50211        127.0.0.1:9998         ESTABLISHED\n"
+    assert cli.connected_clients(netstat, 9998) == 1  # the game's side only; a dead client does not count
+    assert cli.connected_clients(netstat, 1234) == 0
+
+
+@pytest.fixture
+def silent_debugger(monkeypatch):
+    """A debugger port that takes connections and never answers, as the game does while another client is on it."""
+    import functools
+    import socket
+
+    from bg3coop import game
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    port = srv.getsockname()[1]
+    monkeypatch.setenv("BG3COOP_PORT", str(port))
+    monkeypatch.delenv("BG3COOP_SSH_HOST", raising=False)
+    monkeypatch.setattr(game, "RemoteLua", functools.partial(game.RemoteLua, connect_timeout=0.3))
+    monkeypatch.setattr(cli, "_check_update", lambda r: None)
+    monkeypatch.setattr(cli, "_game_running", lambda ssh_host=None: True)
+    yield port
+    srv.close()
+
+
+@pytest.mark.parametrize("busy", [True, False])
+def test_doctor_when_another_program_holds_the_debugger(silent_debugger, monkeypatch, capsys, busy):
+    port = silent_debugger
+    netstat = f"  TCP    127.0.0.1:{port}         0.0.0.0:0              LISTENING\n"
+    if busy:
+        netstat += f"  TCP    127.0.0.1:{port}         127.0.0.1:60899        ESTABLISHED\n"
+    monkeypatch.setattr(cli, "_run", lambda cmd, ssh_host: netstat if cmd[0] == "netstat" else None)
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert "Is BG3 running" not in out
+    if busy:
+        assert code == 0 and "another program is connected" in out and "All good" not in out
+        assert "call `party`" in out
+    else:
+        assert code == 1 and "did not answer" in out

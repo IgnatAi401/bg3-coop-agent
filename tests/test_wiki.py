@@ -81,6 +81,7 @@ def test_offline(monkeypatch):
 def test_tool_returns_errors_as_text(monkeypatch):
     from bg3coop import server
 
-    monkeypatch.setattr(server.chat, "listen", lambda status=None: False)
+    monkeypatch.setattr(server.chat, "listen", lambda status=None, activity=None: False)
+    monkeypatch.setattr(server.chat, "begin", lambda tool, kw: {"done": tool})
     monkeypatch.setattr(server.bg3wiki, "lookup", lambda q, o: (_ for _ in ()).throw(wiki.WikiError("down")))
     assert server.wiki("Fireball") == {"error": "down"}

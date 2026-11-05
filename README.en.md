@@ -86,7 +86,7 @@ Then restart the agent (or start a new session), close the game and run `setup` 
 
 ## Starting a session
 
-1. Start the game (the Script Extender downloads its runtime on the first start), load a save, and make sure the companion you want to hand to the agent is in the party.
+1. Start the game (the Script Extender downloads its runtime on the first start), load a save, and make sure the companion you want to hand to the agent is in the party. The game may warn that game files are corrupted or similar on startup; with the Script Extender and mods installed this is common and can usually be ignored.
 2. Run the check (optional):
 
    ```powershell
@@ -119,7 +119,9 @@ Then restart the agent (or start a new session), close the game and run `setup` 
 - **Camp and waypoints**: the agent can go to camp, leave camp, or travel to waypoints on the current map that it has unlocked. Only its character goes; you and your party stay. Not during combat or dialogue.
 - **Reactions**: after taking over, the agent's character uses reactions that cost no spell slot (Warding Flare, opportunity attacks) automatically and skips those that do; you no longer get its reaction prompts on your screen. The agent can change this with `reactions`; `regroup` restores the original settings.
 - **Chat panel**: once the agent is working, a "BG3 Co-op" window appears in the game; `F10` shows or hides it, and it opens by itself when the agent writes to you. After a restart or loading a save the panel comes back with the agent's next action; if it does not, tell the agent "the panel is gone".
-  - The top line shows the agent's character, its HP and what it is doing.
+  - The title bar shows the character the agent plays. A new message from the agent makes it blink, then it keeps saying "N new" until you move the mouse over the panel, click the input box or send something.
+  - The line under the title is live: "casting Fire Bolt → Goblin · 3s" while an action runs, "Thinking · 20s · after: …" while the agent decides, and a warning that it may have stopped after two minutes without an action. In combat it also shows whether the agent has got its turn ("Shadowheart's turn · not received yet (8s)" or "Shadowheart's turn · received").
+  - The Chat tab holds the conversation; the Actions tab lists what the agent did lately, newest at the bottom, failures in red.
   - Four quick buttons: Follow me, Stop, Wait for me, Free roam.
   - Type in the box and press Enter; the agent sees it with its next tool call, and its replies appear here. Typing in the box does not trigger game keys.
   - When the agent is unsure it asks; answer with the Yes / No buttons or type a reply. If you do not answer for a while it carries on.

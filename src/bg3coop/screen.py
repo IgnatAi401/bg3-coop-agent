@@ -10,6 +10,7 @@ BG3COOP_SCREENSHOTS=0 turns it off (for an agent whose model cannot read images)
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import os
 import subprocess
 import sys
@@ -84,12 +85,16 @@ def enabled() -> bool:
     return os.environ.get("BG3COOP_SCREENSHOTS", "1").strip().lower() not in ("0", "off", "no", "false")
 
 
+_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="bg3coop-shot")
+
+
 class TurnShots:
     """At most one screenshot per combat turn of the agent."""
 
     def __init__(self, ssh_host: str | None) -> None:
         self.ssh_host = ssh_host
         self.taken = False  # for the current turn
+        self._pending: concurrent.futures.Future | None = None  # a grab started early, by `start`
 
     def available(self) -> bool:
         return enabled() and (bool(self.ssh_host) or sys.platform == "win32")
@@ -99,6 +104,14 @@ class TurnShots:
 
     def turn_over(self) -> None:
         self.taken = False
+        self._pending = None
+
+    def start(self) -> None:
+        """Begin this turn's picture now, on a thread, so it is taken while the rest of the turn's
+        first result is put together (over ssh a picture takes seconds); `attach` waits for it."""
+        if self.taken or self._pending or not self.available():
+            return
+        self._pending = _POOL.submit(self.grab)
 
     def attach(self, result: dict, key: str) -> dict:
         """Put this turn's picture under `key` (bytes; the tool wrapper turns it into an image),
@@ -106,9 +119,10 @@ class TurnShots:
         if self.taken or not self.available() or not isinstance(result, dict):
             return result
         self.taken = True
+        pending, self._pending = self._pending, None
         try:
-            result[key] = self.grab()
+            result[key] = pending.result(timeout=TIMEOUT_S + 5) if pending else self.grab()
             result["screenshot"] = NOTE
-        except ShotError as e:
-            result["screenshot"] = f"none this turn ({e})"
+        except (ShotError, concurrent.futures.TimeoutError) as e:
+            result["screenshot"] = f"none this turn ({e or 'it took too long'})"
         return result

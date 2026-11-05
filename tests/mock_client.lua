@@ -9,6 +9,9 @@ local function element(kind, label)
     function el:SetSize(size) self.size = size end
     function el:SetScroll(v) self.scrolled = v end
     function el:SetCollapsed(v) self.collapsed = v end
+    function el:SetStyle(name, a, b) self.styles = self.styles or {}; self.styles[name] = b and { a, b } or a end
+    function el:SetSizeConstraints(lo, hi) self.limits = { lo, hi } end
+    function el:Tooltip() self.tip = self.tip or element("tooltip") return self.tip end
     function el:Destroy() self.destroyed = true end
     function el:RemoveAllChildren() self.Children = {} end
     local function add(k)
@@ -24,6 +27,15 @@ local function element(kind, label)
     el.AddInputText = add("input")
     el.AddChildWindow = add("child")
     el.AddGroup = add("group")
+    el.AddCollapsingHeader = add("header")
+    el.AddSpacing = add("spacing")
+    el.AddSeparator = add("separator")
+    el.AddTabBar = add("tabbar")
+    el.AddTabItem = add("tab")
+    el.AddTable = add("table")
+    el.AddRow = add("row")
+    el.AddCell = add("cell")
+    el.AddProgressBar = add("progress")
     return el
 end
 
@@ -45,10 +57,10 @@ function MOCK_C.fire(name, e)
     end
 end
 
--- The panel as the human sees it: the newest window and its log lines.
+-- The panel as the human sees it: the newest window and its message log.
 function MOCK_C.panel()
     local w = MOCK_C.windows[#MOCK_C.windows]
-    return w, w.Children[1], w.Children[2], w.Children[3]
+    return w, w.Children[4].Children[1].Children[1]
 end
 
 Ext = {
@@ -58,6 +70,7 @@ Ext = {
     UI = { GetRoot = function() return MOCK_C.root end, GetPickingHelper = function() return MOCK_C.pick end },
     Loca = { GetTranslatedString = function(h) return (MOCK_C.loca or {})[h] or "" end },
     IMGUI = {
+        GetViewportSize = function() return { 2560, 1440 } end,
         NewWindow = function(label)
             local w = element("window", label)
             w.Open = true
@@ -65,6 +78,8 @@ Ext = {
             return w
         end,
     },
+    -- MOCK_C.turns[uuid]: the TurnBased component the client sees for that character
+    Entity = { Get = function(u) local tb = (MOCK_C.turns or {})[u] return tb and { TurnBased = tb } end },
     Events = { KeyInput = event("KeyInput"), Tick = event("Tick"), MouseButtonInput = event("MouseButtonInput") },
     Utils = { MonotonicTime = function() return MOCK_C.now or 0 end,
         GetGlobalSwitches = function() return { Language = MOCK_C.language or "English" } end },

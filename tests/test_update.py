@@ -72,8 +72,9 @@ def test_background_hands_out_once(github, monkeypatch):
 def test_tool_result_carries_the_notice_once(monkeypatch):
     from bg3coop import server
 
-    monkeypatch.setattr(server.chat, "listen", lambda status=None: False)
-    monkeypatch.setattr(server.chat, "note_tool", lambda tool, result: None)
+    monkeypatch.setattr(server.chat, "listen", lambda status=None, activity=None: False)
+    monkeypatch.setattr(server.chat, "begin", lambda tool, kw: {"done": tool})
+    monkeypatch.setattr(server.chat, "header", lambda: None)
     monkeypatch.setattr(server, "_updates", update.Background())
 
     @server._safe

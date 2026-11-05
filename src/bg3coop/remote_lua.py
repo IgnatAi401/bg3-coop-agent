@@ -189,6 +189,8 @@ class RemoteLua:
         self.server_version: int | None = None
         self._sock: socket.socket | None = None
         self._next_seq = 1
+        # Bytes read but not yet a whole packet: kept across a timeout, so the stream stays in step.
+        self._rbuf = bytearray()
         self._lock = threading.Lock()
 
     @property
@@ -201,6 +203,7 @@ class RemoteLua:
         self._sock = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._next_seq = 1
+        self._rbuf = bytearray()
         try:
             deadline = time.monotonic() + self.connect_timeout
             self._send((CONNECT_REQUEST, encode((1, self.protocol_version))))
@@ -244,7 +247,12 @@ class RemoteLua:
 
         statement=True runs it as a chunk (use `return` to get a value); False evaluates one expression.
         Raises RemoteLuaError for errors and refusals, TimeoutError when the game does not answer in
-        time (the connection is closed then), ConnectionError when the connection is gone.
+        time, ConnectionError when the connection is gone.
+
+        A timeout keeps the connection: the game answers late (after a loading screen, say) and that
+        answer is skipped by its sequence number. Closing instead would leak: SE v33 never closes
+        its end of a connection the client hung up, and with enough of those the port stops
+        serving.
         """
         if context not in CONTEXT_IDS:
             raise ValueError(f"unknown context {context!r}")
@@ -274,7 +282,6 @@ class RemoteLua:
                             name = STATUS_NAMES[status] if status < len(STATUS_NAMES) else f"status {status}"
                             raise RemoteLuaError(name)
             except socket.timeout as e:
-                self.close()
                 raise TimeoutError(f"the game did not answer within {timeout} s") from e
             except (OSError, ValueError) as e:
                 self.close()
@@ -293,25 +300,27 @@ class RemoteLua:
         return seq
 
     def _receive(self, deadline: float) -> Message:
-        assert self._sock is not None
-        size = struct.unpack("<I", self._read(4, deadline))[0]
+        self._fill(4, deadline)
+        size = struct.unpack("<I", bytes(self._rbuf[:4]))[0]
         if not 4 <= size <= MAX_PACKET_BYTES:
             raise ConnectionError(f"bad packet size {size}")
-        return decode(self._read(size - 4, deadline))
+        self._fill(size, deadline)
+        body = bytes(self._rbuf[4:size])
+        del self._rbuf[:size]
+        return decode(body)
 
-    def _read(self, n: int, deadline: float) -> bytes:
+    def _fill(self, n: int, deadline: float) -> None:
+        """Read until the buffer holds n bytes. A timeout leaves what came so far in the buffer."""
         assert self._sock is not None
-        buf = bytearray()
-        while len(buf) < n:
+        while len(self._rbuf) < n:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise socket.timeout("debugger response deadline reached")
             self._sock.settimeout(remaining)
-            chunk = self._sock.recv(n - len(buf))
+            chunk = self._sock.recv(n - len(self._rbuf))
             if not chunk:
                 raise ConnectionError("the game closed the debugger connection")
-            buf += chunk
-        return bytes(buf)
+            self._rbuf += chunk
 
     def _handle_unsolicited(self, msg: Message) -> None:
         """Log lines, late answers to timed-out requests and the like are dropped. A paused context

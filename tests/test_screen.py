@@ -93,3 +93,26 @@ def test_mcp_sends_text_and_image(shots):
     kinds = [b.type for b in blocks]
     assert kinds == ["text", "image"] and blocks[1].mime_type == "image/jpeg"
     assert '"my_turn": true' in blocks[0].text
+
+
+def test_the_picture_is_taken_while_the_turn_is_put_together(monkeypatch):
+    import threading
+    import time
+
+    t = screen.TurnShots("somehost")
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        time.sleep(0.3)
+        return b"jpeg"
+
+    monkeypatch.setattr(t, "grab", slow)
+    t.start()
+    assert started.wait(1)  # already being taken, before attach is called
+    r = t.attach({}, "_shot")
+    assert r["_shot"] == b"jpeg" and r["screenshot"] == screen.NOTE
+    assert t.attach({}, "_shot") == {}  # once per turn
+    t.turn_over()
+    t.start()
+    assert t.attach({}, "_shot")["_shot"] == b"jpeg"

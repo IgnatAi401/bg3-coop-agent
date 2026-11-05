@@ -23,6 +23,7 @@ class Handles:
     def __init__(self) -> None:
         self._ids: dict[str, str] = {}  # handle -> id as the game gave it
         self._handles: dict[str, str] = {}  # bare GUID -> handle
+        self._names: dict[str, str] = {}  # handle -> the name the game gave with it
 
     def handle(self, guid: str) -> str:
         key = bare(guid)
@@ -41,6 +42,11 @@ class Handles:
             return ref
         raise GameError(f"unknown id {ref!r}: use an id from look, like e12")
 
+    def name(self, ref: str) -> str | None:
+        """The name last shown with this handle (or id), for the human's eyes."""
+        ref = ref.strip()
+        return self._names.get(ref) or self._names.get(self._handles.get(bare(ref), ""))
+
     def shorten(self, obj: Any) -> Any:
         """A game reply with every `id` turned into a handle and empty values left out."""
         if isinstance(obj, dict):
@@ -49,6 +55,8 @@ class Handles:
                 if v is None or v == [] or v == {}:
                     continue
                 out[k] = self.handle(v) if k == "id" and isinstance(v, str) else self.shorten(v)
+            if isinstance(out.get("id"), str) and isinstance(obj.get("name"), str):
+                self._names[out["id"]] = obj["name"]
             return out
         if isinstance(obj, list):
             return [self.shorten(x) for x in obj]

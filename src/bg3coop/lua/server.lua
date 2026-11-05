@@ -10,7 +10,7 @@
 
 BG3COOP = BG3COOP or {}
 local C = BG3COOP
-C.VERSION = 92
+C.VERSION = 93
 
 local function now() return Ext.Utils.MonotonicTime() end
 
@@ -4229,13 +4229,33 @@ end
 -- through C.on, so re-sending this file updates them.
 ------------------------------------------------------------------------
 
+-- The agent's turn begins: once per turn, whichever sees it first. TurnStarted names only the
+-- first of a group that shares one turn (party members next to each other in initiative), so the
+-- agent's own TurnBased.IsActiveCombatTurn is watched too, at every TurnStarted and every call.
+function C.turnBegins(u)
+    if C.turn.live then return end
+    C.turn.live = true
+    C.turn.ended = {}
+    C.turn.n = (C.turn.n or 0) + 1
+    push("your_turn", turnBudget(u))
+end
+
+function C.watchTurn()
+    if not (C.agent and inCombat(C.agent)) then C.turn.live = nil return end
+    local tb = comp(entity(C.agent), "TurnBased")
+    local ok, active = pcall(function() return tb.IsActiveCombatTurn end)
+    if not (tb and ok) then return end
+    if active == true then C.turnBegins(C.agent) else C.turn.live = nil end
+end
+
 C.on.TurnStarted = function(u)
     C.turn.current = u
     if mine(u) then
-        C.turn.ended = {}
-        C.turn.n = (C.turn.n or 0) + 1
-        push("your_turn", turnBudget(u))
-    elseif C.isMySummon(u) then
+        C.turnBegins(u)
+    else
+        pcall(C.watchTurn) -- a shared turn starting with someone else, or someone else's turn
+    end
+    if C.isMySummon(u) then
         local ev = turnBudget(u)
         ev.name, ev.id = C.name(u), u
         push("summon_turn", ev)
@@ -4484,6 +4504,7 @@ function C.rpc(json)
     local args = req.args or {}
     C.actor = nil
     pcall(C.watchFight)  -- every call sees the fight as it is now, not as at the last events poll
+    pcall(C.watchTurn)
     local ok2, res = pcall(function()
         if args.as then
             if not C.ACTS_FOR_SUMMON[req.op] then error(req.op .. " cannot be done by a summon") end

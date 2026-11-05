@@ -24,6 +24,12 @@ from .remote_lua import BG3SE_PROTOCOL_VERSION, RemoteLua, RemoteLuaError
 
 GAME_PORT = 9998
 CHAT_LINES = 100
+
+
+def _clock() -> int:
+    """Seconds since local midnight: the panel's clock for the human's own lines."""
+    t = time.localtime()
+    return t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
 # The debugger drops the connection on a message over 64 KiB, so longer scripts go in pieces.
 CHUNK_BYTES = 32 * 1024
 # The table each injected script lives in, per Lua state.
@@ -225,7 +231,7 @@ class Game:
             except RemoteLuaError as e:
                 raise GameError(str(e)) from e
             except TimeoutError as e:
-                self.client = None
+                # the connection stays: a new one would leak the old one in the game (see evaluate)
                 raise GameError("the game did not answer (paused, loading, or alt-tabbed with pause on?)") from e
 
     def call(self, op: str, args: dict | None = None, context: str = "server") -> Any:
@@ -241,28 +247,37 @@ class Game:
 
     # ---- chat panel ----
 
-    def _remember(self, kind: str, text: str) -> None:
-        self.chat.append({"kind": kind, "text": text})
+    def _remember(self, kind: str, text: str, who: str | None = None) -> dict:
+        """One line of panel history: {kind, text, who, at}."""
+        line = {"kind": kind, "text": text, "at": time.strftime("%H:%M")}
+        if who:
+            line["who"] = who
+        self.chat.append(line)
         del self.chat[:-CHAT_LINES]
+        return line
 
-    def chat_take(self, status: str | None = None) -> tuple[list, dict[int, str]]:
+    def chat_take(self, hud: dict | None = None, activity: dict | None = None) -> tuple[list, dict[int, str]]:
         """What the human sent since the last call: typed lines (and quick buttons), {"point": ...}
-        marks (what they middle-clicked), and Yes/No answers by question id. `status` refreshes the line at the top of the panel."""
-        args = {"status": status} if status else {}
+        marks (what they middle-clicked), and Yes/No answers by question id. `hud` ({name})
+        refreshes the panel's header, `activity` its activity line."""
+        args: dict[str, Any] = {"clock": _clock()}
+        if hud:
+            args["hud"] = hud
+        if activity:
+            args["activity"] = activity
         reply = self.call("chat_take", args, context="client") or {}
         self.lang = reply.get("lang") or self.lang
         got = reply.get("messages") or []
         texts = [m for m in got if isinstance(m, str) or (isinstance(m, dict) and "point" in m)]
         answers = {int(m["ask"]): m["answer"] for m in got if isinstance(m, dict) and "ask" in m}
         for line in reply.get("shown") or []:
-            self._remember("human", line)
+            if isinstance(line, dict):
+                self.chat.append({k: v for k, v in line.items() if k in ("kind", "text", "at")})
+                del self.chat[:-CHAT_LINES]
         return texts, answers
 
-    def _said(self, kind: str, text: str) -> str:
-        if kind == "agent" and self.agent_name:
-            text = f"{self.agent_name}: {text}"
-        self._remember(kind, text)
-        return text
+    def _said(self, kind: str, text: str) -> dict:
+        return self._remember(kind, text, self.agent_name if kind == "agent" else None)
 
     def language(self) -> str:
         """"zh" when the game runs in Simplified Chinese, else "en": what the human reads."""
@@ -274,13 +289,11 @@ class Game:
         return self.lang if self.lang in ("zh", "en") else "en"
 
     def chat_post(self, text: str, kind: str = "agent") -> None:
-        text = self._said(kind, text)
-        self.call("chat_post", {"text": text, "kind": kind}, context="client")
+        self.call("chat_post", self._said(kind, text), context="client")
 
     def chat_ask(self, question: str) -> int:
         self._ask_id += 1
-        text = self._said("agent", question)
-        self.call("chat_ask", {"id": self._ask_id, "text": text}, context="client")
+        self.call("chat_ask", {"id": self._ask_id, **self._said("agent", question)}, context="client")
         return self._ask_id
 
     def chat_ask_close(self, ask_id: int, text: str, kind: str = "human") -> None:

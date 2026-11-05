@@ -6,6 +6,7 @@ handles (short ids), views (how results read), chat (the panel), trading, dialog
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import time
 from typing import Any
@@ -160,6 +161,7 @@ Advantage = roll two d20, keep the higher; disadvantage = keep the lower. Severa
 You get advantage against Prone (倒伏, only within 3 m), Restrained (束缚), Paralysed (麻痹), Stunned (震慑), Blinded (目盲), Off Balance, Sleeping, Enwebbed or Entangled targets, and when you attack Hidden (躲藏) or Invisible (隐形). Melee hits on a Paralysed target, or on a Downed one, within 3 m are always critical.
 You get disadvantage on ranged attacks (bows, crossbows, ranged spell attacks such as Fire Bolt, Eldritch Blast, Scorching Ray, Guiding Bolt) when an enemy stands within its melee reach of you (Threatened, 受威胁) or the target is within 3 m: step away first, or use a saving-throw spell or a melee attack. Do not walk up to an enemy to shoot it. Also when you are Frightened (恐慌: and you cannot move), Blinded, Restrained or Poisoned (中毒), and against an Invisible target.
 High ground: attacking from 2.5 m or more above the target gives +2 to hit and longer range; from 2.5 m or more below, -2.
+Position first: every turn, before you attack, ask whether a better spot is in reach, even when you can already hit someone from where you stand. Look at the screenshot and the x/y/z in `combat`: high ground, cover, out of enemies' melee reach, out of hazards, a line of sight to a better target, room for an area spell that spares allies.
 Opportunity attack: while an enemy stands next to you (Threatened, 受威胁), leaving its melee reach lets it attack you with its reaction, whether you walk, jump, or the game walks you up to a target out of range. The bridge sees it coming: the first such `move` / jump / `cast` is refused, naming who would strike. The same call again goes ahead (`even_if_provoking` goes at once). The blow then usually cuts off what you were doing: that is the game, not a bug, and nothing was spent, so make the call once more (that enemy's reaction is used up for the round). Weigh it first: is the better spot worth the hit? A ranged character with an enemy on it often is better off taking it and getting away than shooting with disadvantage. To leave without the hit: Disengage (Shout_Disengage, an action; a bonus action for some classes) for the whole turn, Shove (Target_Shove, bonus action) the enemy out of reach first, or teleport (Misty Step does not provoke). An enemy leaving your reach provokes yours, which is automatic.
 Dash (action): double movement this turn. Jump (bonus action + 3 m movement): over gaps and up ledges; falls from over 4 m hurt. Jumping out of an enemy's reach provokes an opportunity attack too (see above). Difficult terrain (ice, grease, web, mud, deep water) costs double movement.
 Shove (bonus action, 1.5 m): an Athletics contest that pushes the target away: off a ledge (falling damage) or into a chasm (dead). Shoving an ally always works.
@@ -201,6 +203,7 @@ def _run_job(start: dict, wait_s: float) -> dict:
     job_id = start["job"]
     deadline = time.monotonic() + max(0.5, min(wait_s, 45))
     polls = 0
+    in_turn = _turn_came()  # the agent acts in a turn not handed over yet: that turn is no news
     while True:
         view = game.call("job", {"id": job_id})
         if view["status"] != "running":
@@ -208,7 +211,7 @@ def _run_job(start: dict, wait_s: float) -> dict:
         if time.monotonic() >= deadline:
             return {"id": job_id, "status": "running", "hint": "still going: call wait or job_status"}
         polls += 1
-        if polls % 2 == 0 and _something_came_up():
+        if polls % 2 == 0 and _something_came_up(in_turn):
             time.sleep(0.4)  # what came up may be the job's own doing (talk opens a dialogue)
             view = game.call("job", {"id": job_id})
             if view["status"] != "running":
@@ -219,12 +222,26 @@ def _run_job(start: dict, wait_s: float) -> dict:
         time.sleep(0.25)
 
 
-def _something_came_up() -> bool:
+def _turn_came() -> bool:
+    """Whether the agent's combat turn has begun and has not been handed over yet. Polled, not only
+    told by the `your_turn` event: in a shared turn (party members next to each other in initiative
+    act together) the game starts the turn for the first of them only."""
+    try:
+        t = game.call("turn_check")
+    except GameError:
+        return False
+    return isinstance(t, dict) and bool(t.get("my_turn")) and (t.get("epoch"), t.get("n")) != _fed["turn"]
+
+
+def _something_came_up(in_turn: bool = False) -> bool:
+    """`in_turn`: the action started in the agent's turn, so that turn starting is not news."""
     try:
         _fetch_events()
     except GameError:
         pass
-    return any(e.get("kind") in URGENT for e in _events["held"]) or chat.listen()
+    urgent = URGENT - {"your_turn"} if in_turn else URGENT
+    return (any(e.get("kind") in urgent for e in _events["held"]) or chat.listen()
+            or (not in_turn and _turn_came()))
 
 
 trader = Trader(game, ids, chat, _run_job)
@@ -241,8 +258,15 @@ def _safe(fn):
     """Turn game refusals into plain text results instead of tool errors with stack traces, and hand
     over whatever the human typed in the chat panel meanwhile."""
 
+    sig = inspect.signature(fn)
+
     @functools.wraps(fn)
     def inner(*a, **kw):
+        try:
+            given = dict(sig.bind_partial(*a, **kw).arguments)
+        except TypeError:
+            given = kw
+        started = chat.begin(fn.__name__, given)
         try:
             result = fn(*a, **kw)
         except GameError as e:
@@ -251,7 +275,7 @@ def _safe(fn):
         result = _hand_events(result)
         result = _combat_basics(result)
         picture = result.pop(SHOT, None) if isinstance(result, dict) else None
-        if chat.listen(chat.note_tool(fn.__name__, result)):
+        if chat.listen(chat.header(), chat.end(started, result)):
             result = _with(result, "human_says", chat.take_heard())
         news = _updates.take()
         if news:
@@ -313,6 +337,9 @@ def _turn_feed(tool: str, result: Any) -> Any:
     if key == _fed["turn"]:
         return result
     _fed["turn"] = key
+    chat.doing("getting my turn ready")  # the human sees the turn arrived while this takes a while
+    shots.turn_over()
+    shots.start()
     if tool != "combat" or not isinstance(result, dict) or "error" in result:
         try:
             view: Any = _combat_view()
@@ -322,7 +349,6 @@ def _turn_feed(tool: str, result: Any) -> Any:
             view = {"note": "it is your turn: this is the fight now (it comes once per turn, with the "
                             "first result of the turn)", **view}
         result = _with(result, "your_turn", view)
-    shots.turn_over()
     shots.attach(result, SHOT)
     return result
 
@@ -612,7 +638,7 @@ def wait(seconds: float = 10) -> Any:
     deadline = time.monotonic() + max(1, min(seconds, 30))
     while True:
         _fetch_events()
-        if _events["held"] or chat.listen() or time.monotonic() >= deadline:
+        if _events["held"] or chat.listen() or _turn_came() or time.monotonic() >= deadline:
             break
         time.sleep(0.5)
     s = _call("status")

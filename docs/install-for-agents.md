@@ -210,7 +210,9 @@ list (global, entry `mcp-bg3coop`), Claude Code under `/mcp` (`claude mcp list`)
 ## 5. Check
 
 Ask the person to start the game and load a save with the companion they want you to play in
-the party (the Script Extender downloads its runtime on the first start). Then:
+the party (the Script Extender downloads its runtime on the first start). The game may warn that
+game files are corrupted or similar; with the Script Extender and mods installed this is common
+and can usually be ignored. Then:
 
 ```powershell
 BG3COOP doctor
@@ -228,6 +230,10 @@ that is expected, not a fault.
 Delete what you downloaded for the install (the wheel, the Script Extender zip, temporary folders).
 
 ## 6. Start playing
+
+In your closing summary of the install, tell the person that on startup the game may report
+corrupted game files or a similar error, and that this is normal with the Script Extender and
+mods and can usually be ignored.
 
 Tell the person how to start: in a new agent session, say "start playing, you control
 Shadowheart" (or another companion). In-game, F10 toggles the chat panel; middle-click points at

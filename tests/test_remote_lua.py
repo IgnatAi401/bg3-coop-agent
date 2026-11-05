@@ -37,7 +37,7 @@ def test_value_text():
 class DebuggerSocket:
     """Scripted wire replies, independent of the client's protobuf encoder."""
 
-    def __init__(self, replies, fragment=65536, clock=None):
+    def __init__(self, replies, fragment=65536, clock=None, stall=False):
         self.data = bytearray()
         for body in replies:
             self.data.extend(struct.pack("<I", len(body) + 4) + body)
@@ -45,6 +45,10 @@ class DebuggerSocket:
         self.clock = clock
         self.sent = []
         self.closed = False
+        self.stall = stall  # no data yet: time out, like a game that has not answered
+
+    def add(self, body):
+        self.data.extend(struct.pack("<I", len(body) + 4) + body)
 
     def setsockopt(self, *args):
         pass
@@ -59,6 +63,8 @@ class DebuggerSocket:
         if self.clock is not None:
             self.clock[0] += 0.1
         size = min(size, self.fragment)
+        if not self.data and self.stall:
+            raise ld.socket.timeout("no answer yet")
         data = bytes(self.data[:size])
         del self.data[:size]
         return data
@@ -131,7 +137,23 @@ def test_timeout_covers_fragments_and_unsolicited_packets(monkeypatch, fragment)
     with pytest.raises(TimeoutError):
         client.evaluate("return 1", timeout=0.5)
     assert clock[0] - started < 0.7
-    assert sock.closed and not client.connected
+    assert not sock.closed and client.connected  # kept: closing leaks a connection in the game
+
+
+@pytest.mark.parametrize("cut", [0, 3, 7])
+def test_a_late_answer_after_a_timeout_is_skipped(monkeypatch, cut):
+    """The game was loading: request 3 timed out (maybe halfway through its answer), its answer
+    comes late, and request 4 still gets its own."""
+    client, sock = connected_client(monkeypatch, [], stall=True)
+    late = b"\x10\x03\x2a\x08\x0a\x06\x08\x04\x2a\x02no"  # "no", for request 3
+    packet = struct.pack("<I", len(late) + 4) + late
+    sock.data.extend(packet[:cut])
+    with pytest.raises(TimeoutError):
+        client.evaluate("return 1", timeout=0.2)
+    sock.data.extend(packet[cut:])
+    sock.add(b"\x10\x04\x2a\x08\x0a\x06\x08\x04\x2a\x02ok")  # "ok", for request 4
+    assert client.evaluate('return "ok"') == "ok"
+    assert not sock.closed
 
 
 def test_stdin_runs_a_single_line_statement(monkeypatch, capsys):

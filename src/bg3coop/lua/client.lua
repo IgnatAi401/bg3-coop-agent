@@ -16,7 +16,7 @@
 
 BG3COOP_C = BG3COOP_C or {}
 local C = BG3COOP_C
-C.VERSION = 26
+C.VERSION = 29
 C.ops = {}
 
 local function get(f)
@@ -569,6 +569,13 @@ end
 -- Quick buttons and Yes/No answers to `ask` go the same way. What the human sends waits in
 -- C.inbox until the bridge takes it (chat_take);
 -- the bridge keeps the history and hands it back after a save load (chat_restore).
+--
+--   header   the agent's name and the activity line (what it does now, or how long it
+--            has been thinking); in combat, whether it has got its turn
+--   Chat     messages, a speaker line over each run of lines from one side; quick buttons; input
+--   Actions  the agent's last tool calls, newest at the bottom
+-- A new message from the agent blinks the title bar and keeps "N new" in it until the human
+-- looks: hovers the messages, clicks the input, or sends something.
 
 C.HOTKEY = "F10"
 -- "This one": a middle click sends what the human's mouse points at to the agent. Holding the middle
@@ -578,22 +585,76 @@ C.CLICK_PX = 6
 C.MAX_LINES = 100
 C.inbox = C.inbox or {}  -- strings the human typed, {ask = id, answer = "yes"/"no"} clicks, {point = ...} marks
 C.asks = {}              -- open questions: id -> buttons to remove once answered
+C.ID = "###bg3coop"      -- the window's ImGui id: the title changes, its place and size must not
+C.BLINK_MS = 3000        -- how long the title bar blinks for a new message
+C.BLINK_EVERY_MS = 350
 
-local COLORS = { human = { 1.0, 0.85, 0.55, 1.0 }, agent = { 0.6, 0.9, 1.0, 1.0 }, note = { 0.65, 0.65, 0.65, 1.0 } }
+local function rgb(r, g, b, a) return { r / 255, g / 255, b / 255, a or 1 } end
+
+-- Colors: a dark, slightly warm window, the game's gold as the accent.
+local COLORS = {
+    text = rgb(226, 220, 207), muted = rgb(140, 134, 124), faint = rgb(98, 93, 86),
+    agent = rgb(140, 200, 255), human = rgb(240, 196, 120), note = rgb(140, 134, 124),
+    gold = rgb(214, 172, 96), busy = rgb(126, 214, 140), think = rgb(150, 190, 240),
+    warn = rgb(240, 180, 80), bad = rgb(236, 104, 90),
+}
+local THEME = {
+    WindowBg = rgb(18, 17, 16, 0.94), ChildBg = rgb(0, 0, 0, 0), PopupBg = rgb(24, 22, 20, 0.98),
+    Border = rgb(90, 74, 50, 0.6), Separator = rgb(90, 74, 50, 0.5),
+    TitleBg = rgb(32, 28, 23), TitleBgActive = rgb(48, 40, 30), TitleBgCollapsed = rgb(32, 28, 23, 0.9),
+    FrameBg = rgb(38, 35, 31), FrameBgHovered = rgb(52, 47, 40), FrameBgActive = rgb(60, 54, 45),
+    Button = rgb(54, 46, 36), ButtonHovered = rgb(92, 74, 48), ButtonActive = rgb(120, 94, 56),
+    Header = rgb(54, 46, 36), HeaderHovered = rgb(80, 66, 46), HeaderActive = rgb(100, 82, 54),
+    Tab = rgb(34, 31, 27), TabHovered = rgb(92, 74, 48), TabActive = rgb(66, 55, 40),
+    TabSelected = rgb(66, 55, 40), TabSelectedOverline = rgb(214, 172, 96),
+    PlotHistogram = rgb(170, 60, 52), ScrollbarBg = rgb(0, 0, 0, 0), ScrollbarGrab = rgb(70, 62, 52),
+    ResizeGrip = rgb(90, 74, 50, 0.4), ResizeGripHovered = rgb(214, 172, 96, 0.6),
+    Text = COLORS.text, TextDisabled = COLORS.muted,
+}
+local STYLE = {
+    WindowPadding = { 12, 10 }, WindowRounding = 6, ChildRounding = 4, FrameRounding = 4,
+    FramePadding = { 8, 4 }, ItemSpacing = { 8, 6 }, ScrollbarSize = 10, TabRounding = 4,
+    WindowBorderSize = 1,
+}
+local FLASH = { TitleBg = rgb(150, 110, 50), TitleBgActive = rgb(170, 126, 58), TitleBgCollapsed = rgb(150, 110, 50),
+    Border = rgb(214, 172, 96) }
+local UNREAD = { TitleBg = rgb(92, 70, 38), TitleBgActive = rgb(110, 84, 44), TitleBgCollapsed = rgb(92, 70, 38),
+    Border = rgb(160, 126, 70, 0.8) }
 
 -- What the human reads, in the game's language: Simplified Chinese, or English for any other.
 local TEXT = {
     en = {
         title = "BG3 Co-op", hint = "Message the agent, Enter to send", send = "Send", yes = "Yes", no = "No",
+        you = "You", chat = "Chat", actions = "Actions", unread = "%d new",
+waiting = "Waiting for the agent",
+        busy = "%s · %s", thinking = "Thinking · %s", last = "after: %s",
+        quiet = "No action for %s · thinking hard, or the agent stopped", failed = "failed",
+        turn_new = "%s's turn · not received yet (%s)", turn_seen = "%s's turn · received",
+        no_actions = "Nothing yet.",
+        state_tip = "What the agent is doing. It only reaches the game when the agent calls a tool: "
+            .. "between calls it is thinking, and a long silence may mean it stopped.",
+        sec = "%ds", min = "%dm %02ds",
         buttons = { "Follow me", "Stop", "Wait for me", "Free roam" },
-        pointed = "> (pointing at something: the agent sees what)", spot = "> (pointing at a spot)",
+        tips = { "Come back to me and stay close", "Stop what you are doing", "Wait here until I come back",
+            "Explore and act on your own" },
+        pointed = "(pointing at something: the agent sees what)", spot = "(pointing at a spot)",
         intro = "The agent reads what you type here. %s shows or hides this panel. Middle-click something to "
             .. "show it to the agent (\"attack this\", \"go there\").",
     },
     zh = {
         title = "BG3 合作", hint = "给 agent 发消息，回车发送", send = "发送", yes = "是", no = "否",
+        you = "你", chat = "聊天", actions = "动作记录", unread = "%d 条新消息",
+waiting = "等 agent 连上",
+        busy = "%s · %s", thinking = "思考中 · %s", last = "上一步：%s",
+        quiet = "%s没有动作 · 可能在长考，也可能 agent 停下了", failed = "失败",
+        turn_new = "轮到%s了 · 还没收到（%s）", turn_seen = "%s的回合 · 已收到",
+        no_actions = "还没有动作。",
+        state_tip = "agent 正在做什么。只有 agent 调用工具时游戏才知道：两次调用之间就是在思考，"
+            .. "很久没动静可能是它停下了。",
+        sec = "%d 秒", min = "%d 分 %02d 秒",
         buttons = { "跟上我", "停下", "等我", "自由行动" },
-        pointed = "> （指了一个东西，agent 会看到是什么）", spot = "> （指了一个地点）",
+        tips = { "回到我身边，跟紧", "停下手上的事", "在这里等我回来", "自己探索、自己行动" },
+        pointed = "（指了一个东西，agent 会看到是什么）", spot = "（指了一个地点）",
         intro = "agent 会读你在这里打的字。%s 显示或隐藏这个面板。用鼠标中键点一下东西，就能指给 agent 看"
             .. "（「打这个」「去那里」）。",
     },
@@ -618,12 +679,28 @@ local QUICK = {
     "[button] Explore on your own",
 }
 
-local function colored(el, kind)
+local function colored(el, kind, wrap)
     pcall(function()
-        el.TextWrapPos = 0
-        el:SetColor("Text", COLORS[kind] or COLORS.note)
+        if wrap ~= false then el.TextWrapPos = 0 end
+        el:SetColor("Text", COLORS[kind] or COLORS.text)
     end)
     return el
+end
+
+local function now() return Ext.Utils.MonotonicTime() end
+
+-- The bridge's wall clock ({ sec = seconds since midnight }) against ours, for the time of the
+-- human's own lines: the client Lua has no os library.
+C.clock = C.clock or nil
+
+function C.setClock(sec)
+    if tonumber(sec) then C.clock = { sec = tonumber(sec), at = now() } end
+end
+
+local function clockText()
+    if not C.clock then return nil end
+    local s = math.floor(C.clock.sec + (now() - C.clock.at) / 1000) % 86400
+    return string.format("%02d:%02d", math.floor(s / 3600), math.floor(s / 60) % 60)
 end
 
 local function prune(p)
@@ -640,29 +717,105 @@ end
 -- below the edge: keep asking for a short while, until the layout has caught up.
 C.SCROLL_MS = 400
 
-local function scrollDown(p)
-    if p then p.scrollUntil = Ext.Utils.MonotonicTime() + C.SCROLL_MS end
+local function scrollDown(p, key)
+    if not p then return end
+    p.scrollUntil = p.scrollUntil or {}
+    p.scrollUntil[key or "log"] = now() + C.SCROLL_MS
 end
 
-local function addLine(kind, text)
+-- ---- unread messages: the title bar blinks, then keeps "N new" until the human looks
+
+local function paintTitle(p, colors)
+    for name, c in pairs(colors or THEME) do
+        if FLASH[name] then pcall(function() p.win:SetColor(name, c) end) end
+    end
+end
+
+-- "BG3 Co-op · Shadowheart · F10", or "· 2 new" while there are unread messages.
+local function showTitle(p)
+    local u = p.unread or 0
+    local label = T("title")
+    if C.hud and C.hud.name then label = label .. "  ·  " .. tostring(C.hud.name) end
+    label = label .. "  ·  " .. (u > 0 and T("unread"):format(u) or C.HOTKEY)
+    if label ~= p.title then
+        p.title = label
+        pcall(function() p.win.Label = label .. C.ID end)
+    end
+end
+
+local function unreadOne(p)
+    p.unread = (p.unread or 0) + 1
+    p.blinkUntil = now() + C.BLINK_MS
+    showTitle(p)
+end
+
+local function markRead(p)
+    p = p or C.panel
+    if not p or (p.unread or 0) == 0 then return end
+    p.unread, p.blinkUntil, p.lit = 0, nil, nil
+    paintTitle(p, THEME)
+    showTitle(p)
+end
+
+local function blink(p)
+    if (p.unread or 0) == 0 then return end
+    local t = now()
+    local lit = "unread"
+    if p.blinkUntil and t < p.blinkUntil then
+        lit = math.floor((p.blinkUntil - t) / C.BLINK_EVERY_MS) % 2 == 0 and "flash" or "unread"
+    end
+    if lit ~= p.lit then
+        p.lit = lit
+        paintTitle(p, lit == "flash" and FLASH or UNREAD)
+    end
+end
+
+-- ---- messages
+
+-- One message: { kind = agent/human/note, text, who, at }. A speaker line goes over the first of a
+-- run of lines from the same speaker.
+local function addMessage(m, fresh)
     local p = C.panel
     if not p then return end
     prune(p)
-    pcall(function() colored(p.log:AddText(text), kind) end)
+    local kind = m.kind or "agent"
+    local who = m.who or (kind == "human" and T("you")) or nil
+    pcall(function()
+        local before = #(p.log.Children)
+        local g = p.log:AddGroup("m")
+        if kind == "note" then
+            colored(g:AddText(tostring(m.text or "")), "note")
+            p.lastWho = nil
+        else
+            if who ~= p.lastWho then
+                if before > 0 then g:AddSpacing() end
+                colored(g:AddText(tostring(who or "")), kind, false)
+                if m.at then
+                    local t = colored(g:AddText(tostring(m.at)), "faint", false)
+                    t.SameLine = true
+                end
+            end
+            colored(g:AddText(tostring(m.text or "")), "text")
+            p.lastWho = who
+        end
+    end)
+    if fresh and kind ~= "human" then unreadOne(p) end
     scrollDown(p)
 end
 
 -- The human's own lines as the panel shows them, for the bridge's copy of the history.
 C.echo = C.echo or {}
 
-local function echo(line)
-    C.echo[#C.echo + 1] = line
-    addLine("human", line)
+local function echo(text)
+    local m = { kind = "human", text = text, at = clockText() }
+    C.echo[#C.echo + 1] = m
+    addMessage(m)
 end
 
 local function push(text, shown)
     C.inbox[#C.inbox + 1] = text
-    echo("> " .. (shown or text))
+    echo(shown or text)
+    markRead()
 end
 
 local function send()
@@ -670,32 +823,87 @@ local function send()
     local text = clean(get(function() return p.input.Text end))
     pcall(function() p.input.Text = "" end)
     if text then push(text:sub(1, 500)) end
+    pcall(function() p.input.RequestActivate = true end) -- keep typing without clicking back in
+end
+
+-- ---- the window
+
+local function styled(w)
+    for name, c in pairs(THEME) do pcall(function() w:SetColor(name, c) end) end
+    for name, v in pairs(STYLE) do
+        pcall(function()
+            if type(v) == "table" then w:SetStyle(name, v[1], v[2]) else w:SetStyle(name, v) end
+        end)
+    end
+end
+
+local function buildHeader(w)
+    local h = {}
+    h.state = colored(w:AddText(T("waiting")), "muted")
+    h.turn = colored(w:AddText(""), "warn")
+    pcall(function() h.turn.Visible = false end)
+    pcall(function()
+        local tip = h.state:Tooltip()
+        colored(tip:AddText(T("state_tip")), "text")
+    end)
+    return h
+end
+
+-- Room under the log for the quick buttons and the input. Measured at 2560x1440 (90 px); the
+-- game's fonts grow with the screen, so scale it, but never so small that the input gets cut off.
+function C.bottomRoom()
+    local h = get(function() return Ext.IMGUI.GetViewportSize()[2] end) or 1440
+    return math.max(86, math.floor(90 * h / 1440 + 0.5))
+end
+
+local function buildChat(tab)
+    local log = tab:AddChildWindow("log")
+    log.Size = { 0, -C.bottomRoom() }
+    log.OnHoverEnter = function() markRead() end
+    local row = tab:AddTable("quick", 4)
+    pcall(function() row.SizingStretchSame = true end)
+    local r = row:AddRow()
+    for i, msg in ipairs(QUICK) do
+        local label = T("buttons")[i]
+        local b = r:AddCell():AddButton(label)
+        pcall(function() b.Size = { -1, 0 } end)
+        pcall(function() colored(b:Tooltip():AddText(T("tips")[i]), "text") end)
+        b.OnClick = function() push(msg, "[" .. label .. "]") end
+    end
+    local input = tab:AddInputText("##msg", "")
+    input.Hint = T("hint")
+    input.EnterReturnsTrue = true
+    pcall(function() input.ItemWidth = -64 end)
+    input.OnChange = function() send() end
+    input.OnActivate = function() markRead() end
+    local button = tab:AddButton(T("send"))
+    button.SameLine = true
+    pcall(function() button.Size = { -1, 0 } end)
+    button.OnClick = function() send() end
+    return log, input
 end
 
 local function buildPanel()
     if C.panel then pcall(function() C.panel.win:Destroy() end) end
     C.asks = {}
-    local w = Ext.IMGUI.NewWindow(T("title") .. " (" .. C.HOTKEY .. ")")
+    local w = Ext.IMGUI.NewWindow(T("title") .. C.ID)
     w.Closeable = true
     w.NoFocusOnAppearing = true
-    w:SetSize({ 440, 320 }, "FirstUseEver")
-    local status = colored(w:AddText(""), "note")
-    for i, msg in ipairs(QUICK) do
-        local label = T("buttons")[i]
-        local b = w:AddButton(label)
-        if i > 1 then b.SameLine = true end
-        b.OnClick = function() push(msg, "[" .. label .. "]") end
-    end
-    local log = w:AddChildWindow("log")
-    log.Size = { 0, -36 }
-    local input = w:AddInputText("##msg", "")
-    input.Hint = T("hint")
-    input.EnterReturnsTrue = true
-    input.OnChange = function() send() end
-    local button = w:AddButton(T("send"))
-    button.SameLine = true
-    button.OnClick = function() send() end
-    C.panel = { win = w, log = log, input = input, status = status }
+    w:SetSize({ 480, 460 }, "FirstUseEver")
+    pcall(function() w:SetSizeConstraints({ 340, 260 }, { 1400, 1400 }) end)
+    styled(w)
+    local h = buildHeader(w)
+    w:AddSeparator()
+    local tabs = w:AddTabBar("tabs")
+    local chatTab = tabs:AddTabItem(T("chat"))
+    local log, input = buildChat(chatTab)
+    local actTab = tabs:AddTabItem(T("actions"))
+    local recent = actTab:AddChildWindow("recent")
+    C.panel = { win = w, log = log, input = input, head = h, recent = recent }
+    w.OnHoverEnter = function() markRead() end
+    showTitle(C.panel)
+    C.showRecent()
+    pcall(C.showHud)
 end
 
 local function ensurePanel()
@@ -739,7 +947,7 @@ local function middle(b) local s = tostring(b) return s == "2" or s == "Middle" 
 
 function C.onMouse(e)
     if not middle(get(function() return e.Button end)) then return end
-    local t = Ext.Utils.MonotonicTime()
+    local t = now()
     if get(function() return e.Pressed end) then
         C.press = { t = t, xy = cursor(), at = C.pointedAt() } -- before a drag turns the camera
         return
@@ -756,7 +964,10 @@ function C.onKey(e)
     if e.Event ~= "KeyDown" or e.Repeat or tostring(e.Key) ~= C.HOTKEY then return end
     local p = ensurePanel()
     p.win.Open = not p.win.Open
-    if p.win.Open then scrollDown(p) end
+    if p.win.Open then
+        scrollDown(p)
+        markRead(p)
+    end
 end
 
 -- The agent wrote something: bring the panel up, hidden or collapsed, so the human sees it.
@@ -773,12 +984,18 @@ function C.onTick()
         pcall(C.hideTrade)
         -- stop hiding once the window has come and gone, or if it never came
         if widget("Trade") then h.seen = true
-        elseif h.seen or Ext.Utils.MonotonicTime() - h.since > 15000 then C.tradeHide = nil end
+        elseif h.seen or now() - h.since > 15000 then C.tradeHide = nil end
     end
     local p = C.panel
-    if p and p.scrollUntil then
-        if Ext.Utils.MonotonicTime() > p.scrollUntil then p.scrollUntil = nil end
-        pcall(function() p.log:SetScroll({ 0, 1e7 }) end)
+    if not p then return end
+    pcall(C.showActivity)
+    pcall(blink, p)
+    for _, key in ipairs({ "log", "recent" }) do
+        local u = p.scrollUntil and p.scrollUntil[key]
+        if u then
+            if now() > u then p.scrollUntil[key] = nil end
+            pcall(function() p[key]:SetScroll({ 0, 1e7 }) end)
+        end
     end
 end
 
@@ -792,13 +1009,14 @@ C.tickSub = Ext.Events.Tick:Subscribe(function() C.onTick() end)
 if C.mouseSub then pcall(function() Ext.Events.MouseButtonInput:Unsubscribe(C.mouseSub) end) end
 C.mouseSub = Ext.Events.MouseButtonInput:Subscribe(function(e) C.onMouse(e) end)
 
--- A line for the panel (kind agent or note). It brings up a hidden or collapsed panel.
+-- A message for the panel: { kind = agent/note, text, who, at }. It brings up a hidden or
+-- collapsed panel and, from the agent, blinks the title bar until the human looks.
 function C.ops.chat_post(args)
     local text = tostring(args.text or "")
     if text == "" then error("text required") end
     local p = ensurePanel()
     reveal(p)
-    addLine(args.kind or "agent", text)
+    addMessage({ kind = args.kind or "agent", text = text, who = args.who, at = args.at }, true)
     return true
 end
 
@@ -809,16 +1027,19 @@ function C.ops.chat_ask(args)
     if not id or text == "" then error("id and text required") end
     local p = ensurePanel()
     reveal(p)
-    prune(p)
+    addMessage({ kind = "agent", text = text, who = args.who, at = args.at }, true)
     pcall(function()
         local g = p.log:AddGroup("ask" .. id)
-        colored(g:AddText(text), "agent")
         local yes = g:AddButton(T("yes") .. "##" .. id)
         local no = g:AddButton(T("no") .. "##" .. id)
         no.SameLine = true
+        for _, b in ipairs({ yes, no }) do pcall(function() b.Size = { 72, 0 } end) end
+        pcall(function() yes:SetColor("Button", rgb(70, 96, 60)) end)
+        pcall(function() yes:SetColor("ButtonHovered", rgb(90, 126, 76)) end)
         local function answer(a)
             C.inbox[#C.inbox + 1] = { ask = id, answer = a }
             for _, b in ipairs({ yes, no }) do b.Disabled = true end
+            markRead()
         end
         yes.OnClick = function() answer("yes") end
         no.OnClick = function() answer("no") end
@@ -841,25 +1062,161 @@ function C.ops.chat_ask_close(args)
     return true
 end
 
--- Hand over what the human sent; `status` refreshes the line at the top of the panel.
-function C.ops.chat_take(args)
-    if args.status and C.panel then
-        pcall(function() C.panel.status.Label = tostring(args.status) end)
+-- ---------------------------------------------------------------- header and activity line
+-- What the agent is up to. The bridge only hears from the agent when it calls a tool, so between
+-- calls the agent is thinking (or has stopped): the line counts the time itself, every frame. It
+-- also watches the agent's combat turn here, so the human can tell "the turn came and the agent
+-- has not been told yet" from "the agent knows and is thinking".
+--   busy    the tool now running, as the human reads it; since: when it started
+--   last    the tool before (it ended at idleSince)
+--   recent  the last RECENT tools: { at, text, ok }
+C.RECENT = 30
+C.QUIET_MS = 120000 -- after this long without a tool call, say the agent may have stopped
+C.TURN_EVERY_MS = 300
+C.act = C.act or { recent = {} }
+C.hud = C.hud or {}  -- from the bridge: name
+
+local function ago(ms)
+    local s = math.max(0, math.floor(ms / 1000))
+    if s < 60 then return T("sec"):format(s) end
+    return T("min"):format(math.floor(s / 60), s % 60)
+end
+
+-- Whether it is the agent's own turn in a fight it is in, and not ended yet.
+local function agentTurn(uuid)
+    local tb = get(function() return Ext.Entity.Get(uuid).TurnBased end)
+    if not tb then return false end
+    return get(function() return tb.IsActiveCombatTurn == true and not tb.RequestedEndTurn end) == true
+end
+
+local function watchTurn(t)
+    local a = C.act
+    if not a.agent then return end
+    local on = agentTurn(a.agent)
+    if on and not a.turnSince then a.turnSince, a.turnSeen = t, a.ackAt and t - a.ackAt < 2000
+    elseif not on then a.turnSince, a.turnSeen = nil, nil end
+end
+
+local function setText(el, text, kind, key, p)
+    if p[key] == text .. "|" .. kind then return end
+    p[key] = text .. "|" .. kind
+    pcall(function()
+        el.Label = text
+        el:SetColor("Text", COLORS[kind] or COLORS.text)
+        el.Visible = text ~= ""
+    end)
+end
+
+-- The agent's name goes in the title bar, once it has taken over a companion.
+function C.showHud()
+    if C.panel then showTitle(C.panel) end
+end
+
+function C.showRecent()
+    local p = C.panel
+    if not p or not p.recent then return end
+    pcall(function() p.recent:RemoveAllChildren() end)
+    if #C.act.recent == 0 then
+        pcall(function() colored(p.recent:AddText(T("no_actions")), "muted") end)
     end
+    for _, r in ipairs(C.act.recent) do
+        pcall(function()
+            local g = p.recent:AddGroup("r")
+            colored(g:AddText(tostring(r.at or "")), "faint", false)
+            local t = colored(g:AddText(r.text), r.ok == false and "bad" or "text", false)
+            t.SameLine = true
+            if r.ok == false then
+                local f = colored(g:AddText(T("failed")), "bad", false)
+                f.SameLine = true
+            end
+        end)
+    end
+    scrollDown(p, "recent")
+end
+
+function C.showActivity()
+    local p, a = C.panel, C.act
+    if not p or not p.head then return end
+    local t = now()
+    if not a.turnAt or t - a.turnAt >= C.TURN_EVERY_MS then
+        a.turnAt = t
+        watchTurn(t)
+    end
+    local name = C.hud.name or "agent"
+    if a.turnSince then
+        if a.turnSeen then setText(p.head.turn, T("turn_seen"):format(name), "busy", "shownTurn", p)
+        else setText(p.head.turn, T("turn_new"):format(name, ago(t - a.turnSince)), "bad", "shownTurn", p) end
+    else
+        setText(p.head.turn, "", "warn", "shownTurn", p)
+    end
+    local text, kind
+    if a.busy then
+        text, kind = T("busy"):format(a.busy, ago(t - (a.since or t))), "busy"
+    elseif a.idleSince then
+        local quiet = t - a.idleSince
+        if quiet >= C.QUIET_MS then
+            text, kind = T("quiet"):format(ago(quiet)), "warn"
+        else
+            text, kind = T("thinking"):format(ago(quiet)), "think"
+            if a.last then text = text .. "  ·  " .. T("last"):format(a.last) end
+        end
+    else
+        text, kind = T("waiting"), "muted"
+    end
+    setText(p.head.state, text, kind, "shownState", p)
+end
+
+-- From the bridge: { agent = uuid, busy = text } when a tool starts; { done = text, ok, at } when it
+-- ends; turn_ack when that result handed the agent its turn; clock: its time of day.
+function C.activity(args)
+    local a, t = C.act, now()
+    if args.clock then C.setClock(args.clock) end
+    if args.agent then a.agent = tostring(args.agent) end
+    if args.busy then a.busy, a.since = tostring(args.busy), t end
+    if args.done then
+        a.busy, a.idleSince, a.last = nil, t, tostring(args.done)
+        table.insert(a.recent, { at = args.at, text = tostring(args.done), ok = args.ok })
+        while #a.recent > C.RECENT do table.remove(a.recent, 1) end
+        C.showRecent()
+    end
+    if args.turn_ack then
+        a.ackAt = t
+        watchTurn(t)
+        if a.turnSince then a.turnSeen = true end
+    end
+    pcall(C.showActivity)
+    return true
+end
+
+function C.ops.chat_activity(args)
+    ensurePanel()
+    return C.activity(args)
+end
+
+-- Hand over what the human sent. `hud` ({ name }) refreshes the header, `activity`
+-- the activity line.
+function C.ops.chat_take(args)
+    if type(args.hud) == "table" then
+        C.hud = args.hud
+        pcall(C.showHud)
+    end
+    if args.activity then C.activity(args.activity) end
+    if args.clock then C.setClock(args.clock) end
     local msgs, shown = C.inbox, C.echo
     C.inbox, C.echo = {}, {}
     return { messages = msgs, shown = shown, lang = C.lang() }
 end
 
--- History from the bridge after a save load: [{kind, text}], oldest first.
+-- History from the bridge after a save load: [{kind, text, who, at}], oldest first.
 function C.ops.chat_restore(args)
     local p = ensurePanel()
     pcall(function() p.log:RemoveAllChildren() end)
+    p.lastWho = nil
     local lines = args.lines or {}
     if #lines == 0 then
-        addLine("note", T("intro"):format(C.HOTKEY))
+        addMessage({ kind = "note", text = T("intro"):format(C.HOTKEY) })
     end
-    for _, l in ipairs(lines) do addLine(l.kind, l.text) end
+    for _, l in ipairs(lines) do addMessage(l) end
     return true
 end
 

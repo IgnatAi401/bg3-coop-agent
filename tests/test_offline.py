@@ -262,7 +262,7 @@ def test_choose_tells_the_human_what_and_why(env):
     assert r.pop("events") == [{"kind": "dialogue_started", "yours": True}]
     assert r == {"chose": "Let us pass."}
     assert fake.client.eval("MOCK_C.answered") == "Let us pass."
-    assert _lines(fake)[-1] == "Shadowheart: [chose] Let us pass. - We came for my parents."
+    assert _lines(fake)[-1] == "[chose] Let us pass. - We came for my parents."
 
 
 def test_said_keeps_one_copy_of_a_line_even_out_of_order(env):
@@ -640,22 +640,61 @@ def test_say_writes_to_panel_and_urgent_pops_up(env):
     s.set_agent("Shadowheart")
     assert s.say("I found a chest") == {"shown": "panel"}
     assert fake.world.message is None
-    assert _lines(fake)[-1] == "Shadowheart: I found a chest"
+    assert _lines(fake)[-1] == "I found a chest"
+    assert _texts(list(_panel(fake)[3].Children.values())[-1])[0] == "Shadowheart"  # the speaker line
     assert s.say("Goblins!", urgent=True)["shown"] == "panel and pop-up"
     assert fake.world.message == "Shadowheart: Goblins!"
     assert "without urgent" in s.say("more goblins", urgent=True)["error"]
     assert s.say("still fine")["shown"] == "panel"
 
 
+class _Panel:
+    """The chat panel as the human sees it (see buildPanel in client.lua)."""
+
+    def __init__(self, fake):
+        wins = fake.client.eval("MOCK_C.windows")
+        self.win = wins[len(wins)]
+        kids = list(self.win.Children.values())
+        self.state, self.turn = kids[:2]
+        chat, actions = list(kids[3].Children.values())
+        self.log, table, self.input, self.send = list(chat.Children.values())
+        cells = table.Children[1].Children.values()
+        self.buttons = [c.Children[1] for c in cells]
+        self.recent = actions.Children[1]
+
+
 def _panel(fake):
-    """window, status line, quick buttons, log, input, send button"""
-    w = fake.client.eval("MOCK_C.windows")[len(fake.client.eval("MOCK_C.windows"))]
-    kids = list(w.Children.values())
-    return w, kids[0], kids[1:5], kids[5], kids[6], kids[7]
+    """window, header, quick buttons, log, input, send button"""
+    p = _Panel(fake)
+    return p.win, p, p.buttons, p.log, p.input, p.send
+
+
+def _texts(el):
+    """Every text under an element, in order."""
+    out = []
+    for k in el.Children.values():
+        if k.kind == "text":
+            out.append(k.Label)
+        out += _texts(k)
+    return out
+
+
+def _activity(fake):
+    """the activity line's text, and the recent actions (newest first, one string each)"""
+    # the panel lists them oldest first, newest at the bottom
+    fake.client.execute('MOCK_C.fire("Tick")')
+    p = _Panel(fake)
+    return p.state.Label, [" ".join(_texts(g)) for g in p.recent.Children.values() if g.kind == "group"][::-1]
 
 
 def _lines(fake):
-    return [t.Label for t in _panel(fake)[3].Children.values()]
+    """The message texts in the log, without speaker lines and times."""
+    out = []
+    for g in _panel(fake)[3].Children.values():
+        texts = [k for k in g.Children.values() if k.kind == "text"]
+        if texts:
+            out.append(texts[-1].Label)
+    return out
 
 
 def _type(fake, text, enter=True):
@@ -809,7 +848,8 @@ def test_chat_history_survives_a_save_load(env):
     s.status()
     fake.client.execute("BG3COOP_C = nil")  # a save load gives the client a fresh Lua state
     s.status()
-    assert _lines(fake) == ["Shadowheart: first", "> second"]
+    assert _lines(fake) == ["first", "second"]
+    assert [c.get("who") for c in s.game.chat] == ["Shadowheart", None]
     assert len(fake.client.eval("MOCK_C.windows")) >= 2
 
 
@@ -828,35 +868,67 @@ def test_agent_messages_bring_up_the_panel(env):
     w = _panel(fake)[0]
     w.Open, w.collapsed = False, True  # hidden with F10, or collapsed to its title bar
     s.say("Over here")
-    assert w.Open and w.collapsed is False and _lines(fake)[-1] == "Shadowheart: Over here"
+    assert w.Open and w.collapsed is False and _lines(fake)[-1] == "Over here"
     w.Open, w.collapsed = False, True
     _answer_when_asked(fake, click="Yes")
     assert s.ask("Open the chest?") == {"answer": "yes"}
     assert w.Open and w.collapsed is False
 
 
+def test_new_agent_messages_blink_until_the_human_looks(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    c = fake.client.execute
+    w = _panel(fake)[0]
+    assert w.Label == "BG3 Co-op  ·  Shadowheart  ·  F10###bg3coop"
+    c("MOCK_C.now = 1000")
+    s.say("Over here")
+    s.say("And here")
+    assert w.Label == "BG3 Co-op  ·  Shadowheart  ·  2 new###bg3coop"
+    lit = set()
+    for t in range(1000, 4500, 100):  # it blinks for a few seconds
+        c(f"MOCK_C.now = {t}")
+        _activity(fake)
+        lit.add(tuple(w.colors.TitleBg.values()))
+    assert len(lit) == 2
+    c("MOCK_C.now = 9000")
+    _activity(fake)
+    steady = tuple(w.colors.TitleBg.values())
+    assert w.Label.endswith("2 new###bg3coop")  # still marked after the blinking
+    _panel(fake)[3].OnHoverEnter(_panel(fake)[3])  # the human looks at the messages
+    assert w.Label.endswith("Shadowheart  ·  F10###bg3coop") and tuple(w.colors.TitleBg.values()) != steady
+    _type(fake, "ok")
+    s.status()
+    assert w.Label.endswith("F10###bg3coop")  # the human's own lines never count
+
+
 def test_quick_buttons_and_status_line(env):
     fake, s = env
     s.set_agent("Shadowheart")
     s.status()
-    _, status, buttons, *_ = _panel(fake)
-    assert status.Label == "Shadowheart · HP 20/25 · looking around"
+    _, head, buttons, *_ = _panel(fake)
+    assert _panel(fake)[0].Label == "BG3 Co-op  ·  Shadowheart  ·  F10###bg3coop"
     assert [b.Label for b in buttons] == ["Follow me", "Stop", "Wait for me", "Free roam"]
     buttons[0].OnClick(buttons[0])
     assert s.party()["human_says"][0].startswith("[button] Follow me")
 
 
+def _asks(fake):
+    """The Yes/No question groups in the log."""
+    return [g for g in _panel(fake)[3].Children.values() if g.kind == "group" and str(g.Label).startswith("ask")]
+
+
 def _answer_when_asked(fake, click=None, text=None, seen=None):
     import threading
+    before = len(_asks(fake))
 
     def run():
         for _ in range(100):
-            groups = [g for g in _panel(fake)[3].Children.values() if g.kind == "group"]
-            if groups:
+            groups = _asks(fake)
+            if len(groups) > before:
                 g = groups[-1]
                 if seen is not None:
-                    time.sleep(0.3)  # let ask push its status line first
-                    seen.append(_panel(fake)[1].Label)
+                    seen.append(_activity(fake)[0])
                 if click:
                     btn = next(b for b in g.Children.values() if b.Label.startswith(click))
                     btn.OnClick(btn)
@@ -873,12 +945,11 @@ def test_ask_yes_no_and_reply(env):
     seen = []
     _answer_when_asked(fake, click="Yes", seen=seen)
     assert s.ask("Open the chest?") == {"answer": "yes"}
-    g = [g for g in _panel(fake)[3].Children.values() if g.kind == "group"][-1]
-    assert [c.Label for c in g.Children.values() if not c.destroyed] == ["Shadowheart: Open the chest?", "> Yes"]
-    assert seen == ["Shadowheart · asking you"]  # while asking; back to before afterwards
-    assert _panel(fake)[1].Label == "Shadowheart"
-    s.status()
-    assert _panel(fake)[1].Label == "Shadowheart · HP 20/25 · looking around"
+    g = _asks(fake)[-1]
+    assert [c.Label for c in g.Children.values() if not c.destroyed] == ["Yes"]
+    assert _lines(fake)[-2] == "Open the chest?"
+    assert seen[0].startswith("asking you · ")  # while asking
+    assert _panel(fake)[1].state.Label.startswith("Thinking")
     _answer_when_asked(fake, text="only if it is not trapped")
     assert s.ask("Now?") == {"reply": "only if it is not trapped"}
 
@@ -889,8 +960,9 @@ def test_ask_times_out(env):
     t = time.monotonic()
     r = s.ask("Anyone?", timeout=1)
     assert r["timed_out"] and time.monotonic() - t < 8
-    g = list(_panel(fake)[3].Children.values())[-1]
-    assert [c.Label for c in g.Children.values() if not c.destroyed] == ["Shadowheart: Anyone?", "(no answer in time)"]
+    g = _asks(fake)[-1]
+    assert [c.Label for c in g.Children.values() if not c.destroyed] == ["(no answer in time)"]
+    assert _lines(fake)[-2] == "Anyone?"
 
 
 def test_set_agent_by_english_name_in_another_language(env):
@@ -1462,17 +1534,20 @@ def test_panel_speaks_the_games_language(env):
     fake.client.execute("MOCK_C.language = 'Chinese'")
     s.set_agent("Shadowheart")
     s.status()
-    w, status, buttons, *_ = _panel(fake)
-    assert w.Label.startswith("BG3 合作") and status.Label == "Shadowheart · HP 20/25 · 观察四周"
+    w, head, buttons, *_ = _panel(fake)
+    assert w.Label.startswith("BG3 合作") and w.Label.endswith("###bg3coop")
+    assert _activity(fake)[0].startswith("思考中 · ") and "上一步：看自己状态" in head.state.Label
+    assert head.turn.Visible is False
     assert [b.Label for b in buttons] == ["跟上我", "停下", "等我", "自由行动"]
     assert "中键" in _lines(fake)[0]
     buttons[0].OnClick(buttons[0])
     assert s.party()["human_says"][0].startswith("[button] Follow me")  # the agent still reads English
-    assert _lines(fake)[-1] == "> [跟上我]" and s.game.chat[-1]["text"] == "> [跟上我]"
+    assert _lines(fake)[-1] == "[跟上我]" and s.game.chat[-1]["text"] == "[跟上我]"
+    assert _texts(list(_panel(fake)[3].Children.values())[-1])[0] == "你"
     _answer_when_asked(fake, click="是")
     assert s.ask("开箱子吗？") == {"answer": "yes"}
-    g = [g for g in _panel(fake)[3].Children.values() if g.kind == "group"][-1]
-    assert [c.Label for c in g.Children.values() if not c.destroyed][-1] == "> 是"
+    g = _asks(fake)[-1]
+    assert [c.Label for c in g.Children.values() if not c.destroyed][-1] == "是"
 
 
 def test_spell_lines(env):
@@ -1967,6 +2042,67 @@ def test_the_first_result_of_a_turn_brings_the_fight(env):
     c = s.combat()  # the next turn: combat itself is the picture
     assert c["my_turn"] and "your_turn" not in c
     assert "your_turn" not in s.status()
+
+
+def test_activity_line_shows_what_the_agent_does_and_whether_it_got_its_turn(env):
+    fake, s = env
+    _fight(fake, s)
+    gob = next(c for c in s._look_rows()["characters"] if c["name"] == "Goblin")
+    c = fake.client.execute
+    c("MOCK_C.now = 1000")
+    s.status()
+    line, recent = _activity(fake)
+    assert line == "Thinking · 0s  ·  after: checking myself"
+    assert recent[0].endswith(" checking myself")
+    c("MOCK_C.now = 13000")
+    assert _activity(fake)[0].startswith("Thinking · 12s")
+    c("MOCK_C.now = 200000")
+    assert _activity(fake)[0] == "No action for 3m 19s · thinking hard, or the agent stopped"
+    # a tool running: what it is, by name, and for how long
+    s.chat.begin("cast", {"spell": "Fire Bolt", "target": gob["id"]})
+    c("MOCK_C.now = 203000")
+    assert _activity(fake)[0] == "casting Fire Bolt → Goblin · 3s"
+    s.cast("Fire Bolt", target=gob["id"])  # not the agent's turn: refused
+    assert _activity(fake)[1][0].endswith("casting Fire Bolt → Goblin failed")
+    # the turn comes: the client sees it before the agent is told, then once the agent got it
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{SH}')")
+    c(f"MOCK_C.turns = {{ ['{SH}'] = {{ IsActiveCombatTurn = true }} }}")
+    c("MOCK_C.now = 210000")
+    _activity(fake)
+    c("MOCK_C.now = 218000")
+    _activity(fake)
+    assert _Panel(fake).turn.Label == "Shadowheart's turn · not received yet (8s)"
+    assert "your_turn" in s.inventory()
+    assert _activity(fake)[0].startswith("Thinking · 0s")
+    assert _Panel(fake).turn.Label == "Shadowheart's turn · received" and _Panel(fake).turn.Visible
+    c(f"MOCK_C.turns['{SH}'].RequestedEndTurn = true; MOCK_C.now = 219000")
+    assert _activity(fake)[0].startswith("Thinking · 1s") and _Panel(fake).turn.Visible is False
+    s.status()
+    s.status()
+    recent = _activity(fake)[1]
+    assert len(recent) == 7 and recent[-1].endswith("taking over")
+
+
+def test_wait_wakes_for_a_shared_turn_that_started_with_someone_else(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{GOB}'")
+    s.status()
+    # the human and the agent share one turn: the game names only the human in TurnStarted
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.fire('TurnStarted', '{TAV}')")
+    t = time.monotonic()
+    r = s.wait(20)
+    assert time.monotonic() - t < 5
+    assert "your_turn" in r and [e for e in r["events"] if e["kind"] == "your_turn"]
+    assert "your_turn" not in s.status()  # once per turn
+    r = s.wait(1)
+    assert not [e for e in r["events"] if e["kind"] == "your_turn"]
+    # the next round: someone else's turn in between, then the shared turn again
+    fake.server.execute(f"MOCK.turn = '{GOB}'; MOCK.fire('TurnStarted', '{GOB}')")
+    s.status()
+    fake.server.execute(f"MOCK.turn = '{SH}'")  # no TurnStarted at all this time
+    r = s.wait(20)
+    assert "your_turn" in r
 
 
 def test_what_changed_between_turns_and_the_dead_human(env):

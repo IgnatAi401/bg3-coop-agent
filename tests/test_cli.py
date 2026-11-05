@@ -52,7 +52,7 @@ def test_find_game_dir(tmp_path, monkeypatch):
 
 def test_settings_keep_player_options(tmp_path):
     path = tmp_path / "ScriptExtenderSettings.json"
-    path.write_text("\ufeff" + json.dumps({"EnableAchievements": True, "EnableLuaDebugger": False}))
+    path.write_text("\ufeff" + json.dumps({"EnableAchievements": True, "EnableLuaDebugger": False}), encoding="utf-8")
     merged = cli.merged_settings(cli.read_settings(path), 9998)
     assert merged == {"EnableAchievements": True, "EnableLuaDebugger": True, "LuaDebuggerPort": 9998,
                       "CreateConsole": False}

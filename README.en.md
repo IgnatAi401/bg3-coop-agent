@@ -113,6 +113,7 @@ Then restart the agent (or start a new session), close the game and run `setup` 
   - unlock powers with illithid tadpoles
   - take a short or long rest
   - enter turn-based mode
+  - save or load the game
 - **Dialogue**: BG3 shows one dialogue at a time, on your screen. The agent answers the dialogues its character starts; you can also click an answer for it. It does not touch yours.
 - **Combat**: in turn-based combat the camera moves to the agent's character on its turn; wait until it acts and ends its turn. It waits during yours. The agent's spells use up actions, bonus actions and spell slots as usual. If your initiatives are next to each other (a shared turn), the game still shows the shared turn after the agent is done; end your part.
 - **Camp and waypoints**: the agent can go to camp, leave camp, or travel to waypoints on the current map that it has unlocked. Only its character goes; you and your party stay. Not during combat or dialogue.

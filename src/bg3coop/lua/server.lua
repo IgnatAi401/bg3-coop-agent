@@ -10,7 +10,7 @@
 
 BG3COOP = BG3COOP or {}
 local C = BG3COOP
-C.VERSION = 83
+C.VERSION = 92
 
 local function now() return Ext.Utils.MonotonicTime() end
 
@@ -567,6 +567,50 @@ local function ownedBy(item)
     return n ~= "?" and n or "someone"
 end
 
+-- Lockpicking and disarming traps start only from the human's screen: the game's
+-- lock and trap systems run on the client's network request, and writing their
+-- request queues from Lua crashed the game (DEVLOG 2026-11-05). So the agent asks.
+do
+local TOOLS = {
+    lock = { "TOOL_GEN_ThievesTools_A_Open_A_e32a200c-5b63-414d-ae57-00e7b38f125b", "thieves' tools" },
+    trap = { "TOOL_GEN_Disam_Toolkit_A_22c74b5e-bef2-41b1-b9ed-f4acc766d4ee", "trap disarm toolkits" },
+}
+local function partyTools(kind)
+    local n = 0
+    for _, p in ipairs(party()) do n = n + (tonumber(osi(Osi.TemplateIsInInventory, TOOLS[kind][1], p)) or 0) end
+    return n
+end
+
+function C.askHuman(item, kind)
+    local n, what = partyTools(kind), TOOLS[kind][2]
+    local msg
+    if kind == "lock" then
+        msg = C.name(item) .. " is locked. You cannot pick locks (the game starts lockpicking only from the "
+            .. "human's screen): tell the human with `say` which one and where, and ask them to pick it "
+            .. "(right-click it, Lockpick)"
+    else
+        msg = C.name(item) .. " is an armed trap. You cannot disarm traps (the game starts it only from the "
+            .. "human's screen): tell the human with `say` which one and where, ask them to disarm it "
+            .. "(right-click it, Disarm), and step at least 3 m away from it first. Never walk across it"
+    end
+    if n > 0 then
+        msg = msg .. ("; the party has %d %s"):format(n, what)
+    else
+        msg = msg .. ("; nobody in the party has %s"):format(what)
+            .. (kind == "lock" and " (a key opens it too; or find another way)" or " (go around it)")
+    end
+    local ow = ownedBy(item)
+    if ow and kind == "lock" then
+        msg = msg .. ("; it belongs to %s: picking it is a crime, so `ask` the human first"):format(ow)
+    end
+    return msg
+end
+
+function C.armedTrap(u)
+    return truthy(osi(Osi.IsTrap, u)) and truthy(osi(Osi.IsTrapDiscovered, u)) and truthy(osi(Osi.IsTrapArmed, u))
+end
+end
+
 -- ServerItem.IsContainer is false for many containers (cupboards, crates);
 -- Osiris's IsContainer is what the game goes by.
 local ITEM_FLAGS = { { "IsDoor", "door" }, { "IsLadder", "ladder" }, { "IsContainer", "container" },
@@ -1101,7 +1145,9 @@ local function finish(j, status, result, err)
         -- where the caster stands says little; that the game walked it into range says a lot
         local from, at = j.data.from, result.pos
         local moved = from and at and dist(from, at)
-        if moved and moved > 0.5 then
+        if moved and j.data.jump then
+            result.jumped_m = r1(moved)
+        elseif moved and moved > 0.5 then
             result.moved_m = r1(moved)
             local by = (j.me and not same(j.me, C.agent)) and C.name(j.me) or "you"
             result.why_moved = "the game walked " .. by .. " into range or sight first"
@@ -1249,7 +1295,9 @@ local function stepJob(j)
             return finish(j, "done", result)
         end
     elseif d.wait_until then
-        if now() >= d.wait_until then
+        if now() >= d.wait_until and d.fail_fn then
+            return finish(j, "failed", { pos = p }, d.fail_fn())
+        elseif now() >= d.wait_until then
             local result = { pos = p }
             if d.result_fn then
                 local ok, r = pcall(d.result_fn)
@@ -1667,6 +1715,7 @@ function C.ops.move(args)
         end
         within = within or 2.0 -- a character or object takes up room; nobody stands inside it
     end
+    C.provokeCheck(me, type(target) == "string" and C.pos(target) or target, args)
     if args.sneak then
         sneakMove(j, me, target, within, args)
         return { job = j.id }
@@ -1766,7 +1815,8 @@ function C.ops.use(args)
     local p, ip = C.pos(me), C.pos(item)
     if not ip then error("cannot locate that object") end
     if not perceives(me, p, item, ip) then error("you cannot see that object from here") end
-    if truthy(osi(Osi.IsLocked, item)) then error("it is locked") end
+    if truthy(osi(Osi.IsLocked, item)) then error(C.askHuman(item, "lock")) end
+    if C.armedTrap(item) then error(C.askHuman(item, "trap")) end
     combatGate(me)
     local j = newJob("use")
     j.data.started_in_combat = inCombat(me)
@@ -1828,7 +1878,7 @@ function C.ops.container(args)
     local box = args.id or error("id required")
     local d = dist(C.pos(me), C.pos(box))
     if not d or d > USE_RANGE + 0.5 then error("walk up to it first (use move with its id)") end
-    if truthy(osi(Osi.IsLocked, box)) then error("it is locked") end
+    if truthy(osi(Osi.IsLocked, box)) then error(C.askHuman(box, "lock")) end
     if inPockets(box) then error(POCKETS) end
     local e = entity(box)
     local inv = comp(e, "InventoryOwner")
@@ -3108,6 +3158,22 @@ function C.ops.cast(args)
         args.id, args.pos = nil, spot
         opt.report = function() return { note = note, at = { r1(spot[1]), r1(spot[2]), r1(spot[3]) } } end
     end
+    if st and args.pos and C.hasFlag(st, "IsJump") then
+        -- with the cast checks on, the game walked her a way before jumping (all 9 m of movement
+        -- gone, 2026-11-05); without them it jumps straight there, so range and ground are ours
+        local to = { tonumber(args.pos[1]), tonumber(args.pos[2]), tonumber(args.pos[3]) }
+        local range, mp = C.jumpRange(me, st), C.pos(me)
+        if range <= 0 then error("you are carrying too much to jump") end
+        if mp and dist(mp, to) > range + 0.1 then
+            error(("that is %.1f m away and you can jump %.1f m"):format(dist(mp, to), range))
+        end
+        if not C.groundNear(to) then error("there is no ground to land on at that spot") end
+        C.provokeCheck(me, to, args)
+        opt.keepChecks = true
+    end
+    -- the game stepped the caster about before a summon even with the spot in range (1.0 m and
+    -- 0.45 m, the second into an opportunity attack, 2026-11-05); from the UI it does not move
+    if st and C.groundOnly(st) then opt.noMove = true end
     return startCast(me, castId, parseCosts(st and st.UseCosts), args, opt)
 end
 
@@ -3133,11 +3199,12 @@ local function playByTheRules(me, castId, opt, consumed)
                 local sp = r.Spell
                 if same(r.Caster.Uuid.EntityUuid, me) and (sp.Prototype == castId or sp.OriginatorPrototype == castId) then
                     found = true
-                    local drop = opt.checkTargets and CHECKED_DROP or DROP_OPTIONS
+                    local drop = opt.keepChecks and {} or opt.checkTargets and CHECKED_DROP or DROP_OPTIONS
                     local opts = {}
                     for _, o in ipairs(r.CastOptions) do
                         if not drop[o] then opts[#opts + 1] = o end
                     end
+                    if opt.noMove then opts[#opts + 1] = "NoMovement" end
                     if opt.item then
                         r.Item = entity(opt.item)
                         opts[#opts + 1] = "DestroySource"
@@ -3324,18 +3391,89 @@ function shoutCheck(me, st, args)
     end }
 end
 
+-- How far the character can jump: the spell's range, 1 m more per 2 Strength above 10 (bg3.wiki),
+-- jump boosts, halved when encumbered, none when heavily encumbered.
+function C.jumpRange(me, st)
+    if truthy(osi(Osi.HasActiveStatus, me, "HEAVILY_ENCUMBERED")) then return 0 end
+    local e = entity(me)
+    local str = 10
+    pcall(function() str = e.Stats.Abilities[2] end)
+    local r = (tonumber(rangeOf(st)) or 4.5) + math.max(0, math.floor((str - 10) / 2))
+    pcall(function() r = r + (tonumber(e.JumpMaxDistanceBonusBoost.DistanceBonus) or 0) end)
+    pcall(function() r = r * (tonumber(e.JumpMaxDistanceMultiplierBoost.Amount) or 1) end)
+    if truthy(osi(Osi.HasActiveStatus, me, "ENCUMBERED")) then r = r / 2 end
+    return r
+end
+
+-- Ground within a metre and a half of `p`'s height.
+function C.groundNear(p)
+    local ok, hs = pcall(Ext.Level.GetHeightsAt, p[1], p[3])
+    for _, h in ipairs(ok and hs or {}) do
+        if math.abs(h - p[2]) < 1.5 then return true end
+    end
+    return false
+end
+
+-- Enemies whose opportunity attack leaving for `dest` would draw: in the fight, within their melee
+-- reach of `me` now and not at `dest`, with a reaction left and not incapacitated. Nil out of
+-- combat, after Disengage, or when nobody would strike. A jump out of reach provokes as a walk does,
+-- and the blow cut the jump off (2026-11-05).
+local REACH_M = 2.5 -- centre to centre: 1.5 m of reach plus two bodies
+function C.provokers(me, dest)
+    if not (dest and inCombat(me)) or truthy(osi(Osi.HasActiveStatus, me, "DISENGAGE")) then return nil end
+    local mp = C.pos(me)
+    if not mp then return nil end
+    local out = {}
+    local ok, list = pcall(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter")
+    for _, e in ipairs(ok and list or {}) do
+        local u, p = entityUuid(e), entityPos(e)
+        if u and p and dist(p, mp) <= REACH_M and dist(p, dest) > REACH_M and truthy(osi(Osi.IsEnemy, me, u))
+            and inCombat(u) and not isDead(u) and not isDowned(u)
+            and not truthy(osi(Osi.HasActiveStatusWithGroup, u, "SG_Incapacitated")) then
+            local reaction
+            eachResource(u, function(n, r) if n == "ReactionActionPoint" then reaction = (reaction or 0) + (tonumber(r.Amount) or 0) end end)
+            if reaction ~= 0 then out[#out + 1] = C.name(u) end
+        end
+    end
+    return #out > 0 and out or nil
+end
+
+-- Refused once: the same call again from the same spot, with the same enemies about, goes ahead
+-- (a ranged character with an enemy on it may have to take the blow and get away).
+function C.provokeCheck(me, dest, args, why)
+    if args.even_if_provoking then return end
+    local who = C.provokers(me, dest)
+    if not who then return end
+    local mp = C.pos(me) or { 0, 0, 0 }
+    local function at(p) return ("%d,%d,%d"):format(math.floor(p[1] + 0.5), math.floor(p[2] + 0.5), math.floor(p[3] + 0.5)) end
+    local key = table.concat(who, ",") .. "@" .. at(mp) .. ">" .. at(dest)
+    if C.provokeWarned == key then
+        C.provokeWarned = nil
+        return
+    end
+    C.provokeWarned = key
+    error("leaving " .. table.concat(who, ", ") .. "'s reach draws an opportunity attack" .. (why or " (a jump too)") .. ":"
+        .. " Disengage first (Shout_Disengage), or a teleport. To take the blow and go anyway, make the same call again")
+end
+
 -- Spells that cannot be cast at a character, only at the ground (summons: CannotTargetCharacter,
 -- with "not Character()" in their conditions).
-function C.groundOnly(st)
+function C.hasFlag(st, flag)
     local f = stat(st, "SpellFlags")
     if type(f) == "table" then
-        for _, x in ipairs(f) do if x == "CannotTargetCharacter" then return true end end
+        for _, x in ipairs(f) do if x == flag then return true end end
         return false
     end
-    return tostring(f or ""):find("CannotTargetCharacter", 1, true) ~= nil
+    return tostring(f or ""):find(flag, 1, true) ~= nil
+end
+
+function C.groundOnly(st)
+    -- a jump also has CannotTargetCharacter, but it is movement: NoMovement made the game refuse it
+    return C.hasFlag(st, "CannotTargetCharacter") and not C.hasFlag(st, "IsJump")
 end
 
 -- Free ground next to a character, on the caster's side of it and within `range` of the caster.
+-- Sight does not matter: a summon goes on any ground in range a body can stand on.
 function C.spotBy(me, u, range)
     local mp, tp = C.pos(me), C.pos(u)
     if not (mp and tp) then return nil end
@@ -3406,6 +3544,17 @@ function startCast(me, castId, costs, args, opt)
     if why then error(why) end
     local p = C.pos(me)
     if args.id and not perceives(me, p, args.id, C.pos(args.id)) then error("you cannot see that target") end
+    -- out of range the game walks the caster up first, which can leave an enemy's reach
+    local st = Ext.Stats.Get(castId)
+    local range = st and tonumber(rangeOf(st))
+    local tp = args.id and C.pos(args.id)
+        or args.pos and { tonumber(args.pos[1]), tonumber(args.pos[2]), tonumber(args.pos[3]) }
+    if range and tp and p and not opt.second and dist(p, tp) > range then
+        local d = dist(p, tp)
+        local k = (d - range + 0.5) / d
+        C.provokeCheck(me, { p[1] + (tp[1] - p[1]) * k, p[2] + (tp[2] - p[2]) * k, p[3] + (tp[3] - p[3]) * k },
+            args, (" (the target is %.1f m away, out of the %g m range: the game would walk you up first)"):format(d, range))
+    end
     if not opt.second and not args.even_if_allies then
         local hit = alliesInArea(me, castId, args)
         if hit then
@@ -3413,7 +3562,7 @@ function startCast(me, castId, costs, args, opt)
                 " (in the area): aim elsewhere, or cast again with even_if_allies if you mean it")
         end
     end
-    local j = newJob("cast", { started_in_combat = true, cast = true, from = p }) -- a cast may start the fight itself
+    local j = newJob("cast", { started_in_combat = true, cast = true, from = p, jump = opt.keepChecks }) -- a cast may start the fight itself
     if C.listening.CastedSpell then
         local pend = { job = j.id, caster = me, spell = castId, costs = costs, combat = combat, after = opt.after,
             report = opt.report, failed = opt.failed, spot = not args.id, around = opt.around }
@@ -4187,7 +4336,21 @@ C.on.CastSpellFailed = function(caster, spell)
     if not (pend and same(caster, pend.caster) and spell == pend.spell) then return end
     C.pending = nil
     local j = C.jobs[pend.job]
-    if j then finish(j, "failed", nil, pend.failed or "the game refused the cast: the target may not be valid for it (Help needs a downed ally), or out of sight or reach") end
+    if not j then return end
+    -- struck as it began: a jump out of an enemy's reach drew an opportunity attack that cut it off
+    -- (2026-11-05), and the blow is reported after the failure, so give it a moment; a summon whose
+    -- caster fell to one went off all the same
+    C.striking = pend
+    j.data.cast, j.data.wait_until = nil, now() + 400
+    j.data.fail_fn = function()
+        if C.striking == pend then C.striking = nil end
+        if pend.struck then
+            return pend.struck .. " struck you as it began (an opportunity attack if you were leaving its reach)"
+                .. " and cut it off, or it went off anyway (`combat` shows which). Nothing was spent: try again;"
+                .. " that enemy's reaction is used up now"
+        end
+        return pend.failed or "the game refused the cast: the target may not be valid for it (Help needs a downed ally), or out of sight or reach"
+    end
 end
 -- Osiris also raises Died for a player character who is only downed, so
 -- whether they died is looked at a moment later (the downed event covers the rest).
@@ -4212,6 +4375,9 @@ end
 C.on.AttackedBy = function(defender, owner, attacker, _, damage)
     if attacker == nil or attacker == "" or tostring(attacker):find("^NULL_") then attacker = owner end
     if mine(defender) then push("attacked", { by = C.name(attacker), damage = damage }) end
+    for _, pend in ipairs({ C.pending or false, C.striking or false }) do
+        if pend and same(defender, pend.caster) then pend.struck = C.name(attacker) end
+    end
     if not inMyFight(defender) then return end
     -- a miss, a passed save or an immunity still raises AttackedBy, with 0 damage
     if (tonumber(damage) or 0) > 0 then

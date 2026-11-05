@@ -196,6 +196,7 @@ function ent(id)
             { SpellId = { OriginatorPrototype = "Shout_RadianceOfTheDawn" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
             { SpellId = { OriginatorPrototype = "Target_FlamingSphere" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
             { SpellId = { OriginatorPrototype = "Teleportation_Revivify" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
+            { SpellId = { OriginatorPrototype = "Projectile_Jump" }, ContainerSpell = "", PrepareType = "AlwaysPrepared" },
         } },
         SpellBookPrepares = { PreparedSpells = (function()
                 local out = { { OriginatorPrototype = "Target_MainHandAttack" } }
@@ -342,6 +343,10 @@ Ext = {
         if name == "Target_FlamingSphere" then return { DisplayName = "Flaming Sphere", Level = 0, UseCosts = "ActionPoint:1",
             TargetRadius = "18", SpellType = "Target", VerbalIntent = "Summon", SpellFlags = { "IsSpell", "CannotTargetCharacter" },
             TargetConditions = "CanStand('x') and not Character() and not Self()" } end
+        -- a jump is movement: it also cannot target a character
+        if name == "Projectile_Jump" then return { DisplayName = "Jump", Level = 0, TargetRadius = "4.5",
+            UseCosts = "BonusActionPoint:1;Movement:3", SpellType = "Projectile", VerbalIntent = "Utility",
+            SpellFlags = { "IsJump", "CannotTargetCharacter", "CannotTargetItems" } } end
         if name == "Target_Bless" then return { DisplayName = "Bless", Level = 1, UseCosts = "ActionPoint:1;SpellSlotsGroup:1:1:1" } end
         if name == "OBJ_Potion_Healing" then return { ModifierList = "Object", ItemUseType = "Potion",
             ObjectCategory = "PotionHealing", UseCosts = "BonusActionPoint:1" } end
@@ -441,6 +446,14 @@ local function castLater(c, s, target, thrown)
     local opts = {}
     for _, o in ipairs(r.CastOptions) do opts[o] = true end
     W.castOptions[#W.castOptions + 1] = opts
+    if W.opportunist then
+        -- an enemy's opportunity attack as the caster leaves its reach cuts the cast off
+        local a = W.opportunist
+        W.opportunist = nil
+        -- the game reports the failure first, then the blow
+        fire("CastSpellFailed", c, s, "", "", 1)
+        return fire("AttackedBy", c, a, a, "Slashing", 18, "", 1)
+    end
     if s == "Teleportation_Revivify_Scroll" or s == "Teleportation_Revivify" then
         local t = r.Targets[1]
         if not opts.IgnoreTargetChecks and not (t.Target and W.dead[g(t.Target.Uuid.EntityUuid)]) then
@@ -568,8 +581,10 @@ Osi = {
     GetHasOsirisDialog = function() return 0 end,
     CanTrade = function(u) return b(g(u) == g(W.npc)) end,
     GetCanInteract = function() return 1 end,
-    IsTrap = function() return 0 end,
-    IsTrapDiscovered = function() return 0 end,
+    -- MOCK.traps[uuid] = { discovered = bool, armed = bool }
+    IsTrap = function(u) return b(W.traps and W.traps[g(u)]) end,
+    IsTrapDiscovered = function(u) local t = W.traps and W.traps[g(u)]; return b(t and t.discovered) end,
+    IsTrapArmed = function(u) local t = W.traps and W.traps[g(u)]; return b(t and t.armed) end,
     IsLocked = function(u) return b(W.locked and W.locked[g(u)]) end,
     GetRegion = function(u) return g(u) == g(W.wp_moon) and "MOO_Main_A" or "WLD_Main_A" end,
     PartyGetGold = function() return 120 end,

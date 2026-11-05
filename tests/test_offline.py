@@ -491,7 +491,7 @@ def test_spells_list(env):
     assert set(rows) == {"Target_MainHandAttack", "Projectile_GuidingBolt", "Projectile_Fireball",
                          "Zone_BurningHands", "Shout_SpiritGuardians", "Shout_TurnUndead",
                          "Shout_HealingWord_Mass", "Shout_RadianceOfTheDawn", "Target_FlamingSphere",
-                         "Teleportation_Revivify"}  # Cure Wounds not prepared
+                         "Teleportation_Revivify", "Projectile_Jump"}  # Cure Wounds not prepared
     assert rows["Target_MainHandAttack"]["range_m"] == 1.5
     assert rows["Projectile_GuidingBolt"]["cost"] == "action, slot1" and rows["Projectile_GuidingBolt"]["usable"]
     assert s.spells(kind="heal")[0] == ("Shout_HealingWord_Mass Mass Healing Word "
@@ -2211,3 +2211,98 @@ def test_a_healing_shout_lists_only_the_party_around(env):
     assert around == ["Tav (party)"]
     fake.server.execute("MOCK.res = {}")
     assert "Goblin (enemy)" in s.cast("Shout_RadianceOfTheDawn")["result"]["around_you"]  # it burns them
+
+
+THIEVES_TOOLS = "TOOL_GEN_ThievesTools_A_Open_A_e32a200c-5b63-414d-ae57-00e7b38f125b"
+
+
+def test_locks_are_left_to_the_human(env):
+    # The game starts lockpicking only from the human's screen: the agent is told to ask them.
+    fake, s = env
+    s.set_agent("Shadowheart")
+    chest = _world_object(fake, "Old Chest", (1, 0, 1))
+    fake.server.execute(f'MOCK.locked = {{ ["{chest}"] = true }}')
+    rows = {i["name"]: i["id"] for i in s._look_rows()["items"]}
+    err = s.use(rows["Old Chest"])["error"]
+    assert "Old Chest is locked" in err and "Lockpick" in err
+    assert "nobody in the party has thieves' tools" in err and "crime" not in err
+    fake.server.execute(
+        f'local was = Osi.TemplateIsInInventory\n'
+        f'Osi.TemplateIsInInventory = function(t, ch) if t == "{THIEVES_TOOLS}" then return 2 end '
+        f'return was(t, ch) end\n'
+        f'MOCK.owners["{chest}"] = MOCK.npc')
+    err = s.container(rows["Old Chest"])["error"]
+    assert "has 4 thieves' tools" in err  # two each for Shadowheart and Tav
+    assert "belongs to Arron" in err and "crime" in err
+
+
+def test_armed_traps_are_left_to_the_human(env):
+    fake, s = env
+    s.set_agent("Shadowheart")
+    trap = _world_object(fake, "Spike Trap", (1, 0, 0))
+    fake.server.execute(f'MOCK.traps = {{ ["{trap}"] = {{ discovered = true, armed = true }} }}')
+    rows = {i["name"]: i["id"] for i in s._look_rows()["items"]}
+    err = s.use(rows["Spike Trap"])["error"]
+    assert "armed trap" in err and "Disarm" in err and "3 m away" in err
+    assert "nobody in the party has trap disarm toolkits" in err
+    fake.server.execute(f'MOCK.traps["{trap}"].armed = false')  # disarmed: an object like any other
+    assert s.use(rows["Spike Trap"])["status"] == "done"
+
+
+
+def test_a_summon_is_cast_without_stepping_about(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'")
+    gob = next(c["id"] for c in s._look_rows()["characters"] if c["name"] == "Goblin")
+    assert s.cast("Target_FlamingSphere", target=gob)["status"] == "done"
+    assert fake.server.eval("MOCK.castOptions[#MOCK.castOptions].NoMovement") is True
+
+
+def test_a_cast_cut_off_by_a_blow_says_so_and_can_be_tried_again(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.opportunist = '{GOB}'")
+    r = s.cast("Projectile_Jump", x=5, y=0, z=0)
+    assert r["status"] == "failed" and "struck you" in r["error"] and "try again" in r["error"], r
+    r = s.cast("Projectile_Jump", x=5, y=0, z=0)
+    assert r["status"] == "done", r
+    # a jump is movement: not cast with NoMovement as summons are
+    assert fake.server.eval("MOCK.castOptions[#MOCK.castOptions].NoMovement") is None
+
+
+def test_leaving_an_enemys_reach_is_refused_first(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'; MOCK.pos['{GOB}'] = {{ 3, 0, 0 }}")
+    r = s.move(direction="W", meters=6)
+    assert "opportunity attack" in str(r) and "Goblin" in str(r), r
+    r = s.cast("Projectile_Jump", x=-2, y=0, z=0)
+    assert "opportunity attack" in str(r), r
+    n = fake.server.eval("#MOCK.casts")
+    # refused once: the same call again takes the blow and goes
+    assert s.cast("Projectile_Jump", x=-2, y=0, z=0)["status"] == "done"
+    assert fake.server.eval("#MOCK.casts") == n + 1
+    # a target out of range: the game would walk her up, out of the goblin's reach
+    fake.server.execute(f"MOCK.pos['{SH}'] = {{ 2, 0, 0 }}")
+    r = s.cast("Projectile_GuidingBolt", x=-30, y=0, z=0)
+    assert "opportunity attack" in str(r) and "walk you up" in str(r) and "same call again" in str(r), r
+    # even_if_provoking goes at once
+    assert "opportunity" not in str(s.move(direction="S", meters=6, even_if_provoking=True))
+    # out of the fight nothing is checked
+    fake.server.execute(f"MOCK.combat = false; MOCK.pos['{SH}'] = {{ 2, 0, 0 }}")
+    assert "opportunity" not in str(s.move(direction="W", meters=6))
+
+
+def test_a_jump_goes_straight_there_within_reach(env):
+    fake, s = env
+    _fight(fake, s)
+    fake.server.execute(f"MOCK.turn = '{SH}'")
+    # Strength 8: the plain 4.5 m
+    r = s.cast("Projectile_Jump", x=12, y=0, z=0)
+    assert "you can jump 4.5 m" in str(r), r
+    r = s.cast("Projectile_Jump", x=5, y=0, z=0)
+    assert r["status"] == "done", r
+    # the cast checks stay off, or the game walks her about before jumping
+    assert fake.server.eval("MOCK.castOptions[#MOCK.castOptions].IgnoreCastChecks") is True
+    assert "moved_m" not in r["result"] and "why_moved" not in r["result"], r

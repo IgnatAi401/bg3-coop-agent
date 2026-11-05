@@ -5,3 +5,10 @@ __pycache__/
 
 # the global gitignore excludes tests/; this repo keeps them
 !tests/
+
+# build output and local tool caches
+dist/
+build/
+*.egg-info/
+.ruff_cache/
+.DS_Store
